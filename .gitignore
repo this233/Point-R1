@@ -1,6 +1,7 @@
 __pycache__
 *.egg-info
-checkpoints/
+checkpoints/PointLLM*
+checkpoints/Qwen*
 outputs
 wandb
 anno_data
