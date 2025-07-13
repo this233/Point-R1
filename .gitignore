@@ -10,3 +10,7 @@ modelnet40_data
 *.zip
 *.ipynb
 serving_workdirs
+
+data
+env
+*.log

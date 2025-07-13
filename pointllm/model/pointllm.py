@@ -21,7 +21,7 @@ from contextlib import nullcontext
 # 导入空上下文管理器，用于条件性地应用上下文管理器
 from transformers import AutoConfig, AutoModelForCausalLM, \
                          LlamaConfig, LlamaModel, LlamaForCausalLM, \
-                         Qwen2_5_VLConfig, Qwen2_5_VLTextModel, Qwen2_5_VLModel, Qwen2_5_VLForConditionalGeneration
+                         Qwen2_5_VLConfig, Qwen2_5_VLTextModel, Qwen2_5_VLTextConfig, Qwen2_5_VLModel, Qwen2_5_VLForConditionalGeneration
 # 导入Transformers库中的自动配置、自动模型、Llama配置、Llama模型和Llama因果语言模型
 
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -40,16 +40,20 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 class PointLLMConfig(Qwen2_5_VLConfig):
-    # 定义PointLLM配置类，继承自LlamaConfig
+    # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
     model_type = "pointllm"
     # 设置模型类型为"pointllm"
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
 
 class PointLLMLlamaModel(Qwen2_5_VLTextModel):
     # 定义PointLLM的Llama模型类，继承自LlamaModel
     config_class = PointLLMConfig 
     # 指定配置类为PointLLMConfig
 
-    def __init__(self, config: Qwen2_5_VLConfig):
+    def __init__(self, config: Qwen2_5_VLTextConfig):
         # 初始化方法，接收LlamaConfig类型的配置参数
         super(PointLLMLlamaModel, self).__init__(config)
         # 调用父类的初始化方法
@@ -260,6 +264,8 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
                     continue
                     # 继续下一个样本
                 cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 513x2048 LxC
+                # # DEBUG
+                # cur_point_features = cur_point_features[:32]
                 # 获取当前点云特征并移动到正确的设备
                 num_patches = cur_point_features.shape[0] # * number of point tokens 513(CLS + 512)
                 # 获取点token的数量
@@ -340,7 +346,7 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 初始化方法
         super(Qwen2_5_VLForConditionalGeneration, self).__init__(config)
         # 调用LlamaForCausalLM的初始化方法
-        self.model = PointLLMLlamaModel(config)
+        self.model = PointLLMLlamaModel(config.text_config)
         # 创建PointLLM模型实例
 
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False) # 2048 x 151936

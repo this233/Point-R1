@@ -118,11 +118,13 @@ cd PointLLM
 conda create -n pointllm python=3.10 -y
 conda activate pointllm
 pip install --upgrade pip  # enable PEP 660 support
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu118
+pip install "flash-attn==2.7.3" # cuda 11.8+torch2.6
 pip install -e .
 
 # * for training
 pip install ninja
-pip install flash-attn
+
 ```
 
 ### Data Preparation

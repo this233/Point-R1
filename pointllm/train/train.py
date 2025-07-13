@@ -14,6 +14,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# 导入logging模块并设置全局默认级别
+import logging
+logging.basicConfig(level=logging.INFO)
+
+import torch
+
 # 导入数据类相关模块
 from dataclasses import dataclass, field
 # 导入路径处理模块
@@ -86,7 +92,7 @@ class TrainingArguments(transformers.TrainingArguments):
     optim: str = field(default="adamw_torch")
     # 模型最大序列长度
     model_max_length: int = field(
-        default=2048,
+        default=1024,
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     # 是否使用小模型进行调试
@@ -150,6 +156,7 @@ def train():
         config = transformers.AutoConfig.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
+                torch_dtype=torch.bfloat16,
             )
         # 从配置创建模型
         model = PointLLMLlamaForCausalLM._from_config(config)
@@ -158,8 +165,13 @@ def train():
         model = PointLLMLlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",  # 启用Flash Attention 2
+            device_map="auto"
         )
 
+    # 打印model.dtype
+    logger.info(f"1 model.dtype: {model.dtype}")
     # 禁用模型缓存
     model.config.use_cache = False
 
@@ -248,6 +260,12 @@ def train():
     data_args.mm_use_point_start_end = point_backbone_config['mm_use_point_start_end']
     data_args.point_backbone_config = point_backbone_config
 
+    # # 启用梯度检查点
+    # if training_args.gradient_checkpointing:
+    #     logger.info("Enabling gradient checkpointing...")
+    #     model.gradient_checkpointing_enable()
+    #     logger.info("Gradient checkpointing enabled successfully.")
+
     # 获取不需要梯度的参数列表
     params_no_grad = [n for n, p in model.named_parameters() if not p.requires_grad]
     # 如果存在不需要梯度的参数
@@ -279,6 +297,8 @@ def train():
     data_module = make_object_point_data_module(tokenizer=tokenizer,
                                                     data_args=data_args)
 
+    # 打印model.dtype
+    logger.info(f"2 model.dtype: {model.dtype}")
     # 创建PointLLM训练器
     trainer = PointLLMTrainer(model=model,
                     processing_class=tokenizer,
