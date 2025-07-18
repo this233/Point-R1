@@ -15,6 +15,9 @@
 #    limitations under the License.
 
 # 导入logging模块并设置全局默认级别
+import os
+MY_DEBUG = os.getenv("MY_DEBUG", "False") == "True"
+
 import logging
 logging.basicConfig(level=logging.INFO)
 
@@ -159,15 +162,15 @@ def train():
                 torch_dtype=torch.bfloat16,
             )
         # 从配置创建模型
-        model = PointLLMLlamaForCausalLM._from_config(config)
+        model = Point_R1ForCausalLM._from_config(config)
     else:
         # 正常模式：从预训练模型加载
-        model = PointLLMLlamaForCausalLM.from_pretrained(
+        model = Point_R1ForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",  # 启用Flash Attention 2
-            device_map="auto"
+            # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
         )
 
     # 打印model.dtype
@@ -182,14 +185,14 @@ def train():
         # 固定llama、lm_head、pointnet、投影层参数
         model.requires_grad_(False)
         # 设置模型的fix_llm标志
-        model.get_model().fix_llm = True
+        model.get_model().language_model.fix_llm = True
         # 设置点云投影层为可训练
-        model.get_model().point_proj.requires_grad_(True)
+        model.get_model().language_model.point_proj.requires_grad_(True)
         # 设置点云骨干网络为可训练（为FSDP设置为True，使用fix_pointnet标志控制）
-        model.get_model().point_backbone.requires_grad_(True)
+        model.get_model().language_model.point_backbone.requires_grad_(True)
     else:
         # LLM可训练
-        model.get_model().fix_llm = False
+        model.get_model().language_model.fix_llm = False
         logger.warning("LLM is trainable. Fix_llm flag is set to False")
 
     # 从预训练模型加载分词器
@@ -216,17 +219,17 @@ def train():
     if not training_args.fix_pointnet:
         # 点云骨干网络可训练
         logger.info("Point backbone is trainable. Fix_pointnet flag is set to False, pointnet grad will be recorded.")
-        model.get_model().fix_pointnet = False
+        model.get_model().language_model.fix_pointnet = False
     else:
         # 固定点云骨干网络
         logger.info("Point backbone is fixed. Fix_pointnet flag is set to True, pointnet grad will not be recorded.")
         # 使用torch.inference_mode控制，不使用requires_grad（为FSDP第二阶段考虑）
-        model.get_model().fix_pointnet = True
+        model.get_model().language_model.fix_pointnet = True
         # 如果不是第二阶段训练
         if not training_args.stage_2:
             logger.info("Set requires_grad of point backbone to False")
             # 为第一阶段固定点云网络，第二阶段FSDP需要
-            model.get_model().point_backbone.requires_grad_(False)
+            model.get_model().language_model.point_backbone.requires_grad_(False)
     
     # 根据tune_mm_mlp_adapter标志决定是否训练投影层
     if training_args.tune_mm_mlp_adapter:
@@ -236,7 +239,7 @@ def train():
         logger.info("Point projection layer is trainable.")
     else:
         # 固定投影层
-        model.get_model().point_proj.requires_grad_(False)
+        model.get_model().language_model.point_proj.requires_grad_(False)
         logger.info("Point prejcetion layer is fixed.")
 
     # 根据训练阶段加载不同的配置
@@ -244,7 +247,7 @@ def train():
         # 第一阶段：假设需要从检查点加载llm、point_backbone和投影层
         print(f"Default point_backbone_ckpt is {training_args.point_backbone_ckpt}.")
         # 加载点云骨干网络检查点
-        model.get_model().load_point_backbone_checkpoint(training_args.point_backbone_ckpt)
+        model.get_model().language_model.load_point_backbone_checkpoint(training_args.point_backbone_ckpt)
         # 初始化分词器和点云骨干网络配置
         model.initialize_tokenizer_point_backbone_config(tokenizer=tokenizer, device=training_args.device, fix_llm=training_args.fix_llm)
     else:
@@ -253,7 +256,7 @@ def train():
         model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer=tokenizer) 
 
     # 获取点云骨干网络配置
-    point_backbone_config = model.get_model().point_backbone_config
+    point_backbone_config = model.get_model().language_model.point_backbone_config
 
     # 设置数据参数
     data_args.point_token_len = point_backbone_config['point_token_len']
@@ -267,31 +270,31 @@ def train():
     #     logger.info("Gradient checkpointing enabled successfully.")
 
     # 获取不需要梯度的参数列表
-    params_no_grad = [n for n, p in model.named_parameters() if not p.requires_grad]
-    # 如果存在不需要梯度的参数
-    if len(params_no_grad) > 0:
-        # 如果使用FSDP
-        if training_args.fsdp is not None and len(training_args.fsdp) > 0:
-            # 警告信息
-            if len(params_no_grad) < 10:
-                print('[WARNING] Attempting to use FSDP while {} parameters do not require gradients: {}'. format(len(params_no_grad), params_no_grad))
-            else:
-                print('[WARNING] Attempting to use FSDP while {} parameters do not require gradients: {}...(omitted)'. format(len(params_no_grad), ', '.join(params_no_grad[:10])))
-            print("[WARNING] Attempting to use FSDP with partially frozen paramters, this is experimental.")
-            print("[WARNING] As of 4/30/23, this feature requires PyTorch-nightly build.  See here for details: https://github.com/haotian-liu/LLaVA#experimental-use-fsdp-to-save-memory-in-pretraining")
+    # params_no_grad = [n for n, p in model.named_parameters() if not p.requires_grad]
+    # # 如果存在不需要梯度的参数
+    # if len(params_no_grad) > 0:
+    #     # 如果使用FSDP
+    #     if training_args.fsdp is not None and len(training_args.fsdp) > 0:
+    #         # 警告信息
+    #         if len(params_no_grad) < 10:
+    #             print('[WARNING] Attempting to use FSDP while {} parameters do not require gradients: {}'. format(len(params_no_grad), params_no_grad))
+    #         else:
+    #             print('[WARNING] Attempting to use FSDP while {} parameters do not require gradients: {}...(omitted)'. format(len(params_no_grad), ', '.join(params_no_grad[:10])))
+    #         print("[WARNING] Attempting to use FSDP with partially frozen paramters, this is experimental.")
+    #         print("[WARNING] As of 4/30/23, this feature requires PyTorch-nightly build.  See here for details: https://github.com/haotian-liu/LLaVA#experimental-use-fsdp-to-save-memory-in-pretraining")
 
-            # 导入FSDP
-            from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
-            # 定义FSDP补丁函数
-            def patch_FSDP_use_orig_params(func):
-                def wrap_func(*args, **kwargs):
-                    # 默认使用原始参数
-                    use_orig_params = kwargs.pop('use_orig_params', True)
-                    return func(*args, **kwargs, use_orig_params=use_orig_params)
-                return wrap_func
+    #         # 导入FSDP
+    #         from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
+    #         # 定义FSDP补丁函数
+    #         def patch_FSDP_use_orig_params(func):
+    #             def wrap_func(*args, **kwargs):
+    #                 # 默认使用原始参数
+    #                 use_orig_params = kwargs.pop('use_orig_params', True)
+    #                 return func(*args, **kwargs, use_orig_params=use_orig_params)
+    #             return wrap_func
 
-            # 应用补丁
-            FSDP.__init__ = patch_FSDP_use_orig_params(FSDP.__init__)
+    #         # 应用补丁
+    #         FSDP.__init__ = patch_FSDP_use_orig_params(FSDP.__init__)
 
     # 创建数据模块
     data_module = make_object_point_data_module(tokenizer=tokenizer,
@@ -299,7 +302,19 @@ def train():
 
     # 打印model.dtype
     logger.info(f"2 model.dtype: {model.dtype}")
+    # logger.info(f"2 model.model.language_model.point_backbone dtype: {model.get_model().language_model.point_backbone.dtype}")
     # 创建PointLLM训练器
+
+    print("#########################")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Parameter {name} swill be updated. size: {param.size()}")
+        
+
+    print("#########################")
+    num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total Number of trainable parameters: {num_trainable_params}")
+
     trainer = PointLLMTrainer(model=model,
                     processing_class=tokenizer,
                     args=training_args,

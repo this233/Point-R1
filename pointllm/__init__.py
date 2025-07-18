@@ -1,1 +1,1 @@
-from .model import PointLLMLlamaForCausalLM
+from .model import Point_R1ForCausalLM

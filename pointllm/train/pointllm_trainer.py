@@ -4,7 +4,8 @@ import torch.nn as nn
 
 from transformers import Trainer
 from typing import Optional
-
+import os
+MY_DEBUG = os.getenv("MY_DEBUG", "False") == "True"
 
 def unwrap_model(model: nn.Module) -> nn.Module:
     """

@@ -3,6 +3,8 @@
 
 from typing import List, Optional, Tuple, Union
 # 导入类型提示相关的模块，用于函数参数和返回值的类型声明
+import os
+MY_DEBUG = os.getenv("MY_DEBUG", "False") == "True"
 
 import torch
 # 导入PyTorch深度学习框架
@@ -20,8 +22,10 @@ from transformers import LlamaConfig
 from contextlib import nullcontext
 # 导入空上下文管理器，用于条件性地应用上下文管理器
 from transformers import AutoConfig, AutoModelForCausalLM, \
-                         LlamaConfig, LlamaModel, LlamaForCausalLM, \
-                         Qwen2_5_VLConfig, Qwen2_5_VLTextModel, Qwen2_5_VLTextConfig, Qwen2_5_VLModel, Qwen2_5_VLForConditionalGeneration
+                         LlamaConfig, LlamaModel, LlamaForCausalLM, Qwen2Tokenizer
+from transformers.models.qwen2_5_vl import Qwen2_5_VLConfig,Qwen2_5_VLTextConfig, \
+                                           Qwen2_5_VLTextModel,Qwen2_5_VLModel, Qwen2_5_VLForConditionalGeneration, Qwen2_5_VisionTransformerPretrainedModel
+                                           
 # 导入Transformers库中的自动配置、自动模型、Llama配置、Llama模型和Llama因果语言模型
 
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -39,23 +43,61 @@ logger = logging.getLogger(__name__)
 # 设置为INFO级别
 logger.setLevel(logging.INFO)
 
-class PointLLMConfig(Qwen2_5_VLConfig):
+class Point_R1TextConfig(Qwen2_5_VLTextConfig):
     # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
-    model_type = "pointllm"
-    # 设置模型类型为"pointllm"
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        
+    model_type = "point_r1_text"
 
-class PointLLMLlamaModel(Qwen2_5_VLTextModel):
+class Point_R1TextModel(Qwen2_5_VLTextModel):
     # 定义PointLLM的Llama模型类，继承自LlamaModel
-    config_class = PointLLMConfig 
+    config_class = Point_R1TextConfig 
     # 指定配置类为PointLLMConfig
 
+    def init_point_proj(self):
+        # * print relevant info with projection layers
+        # 打印投影层相关信息
+        backbone_output_dim = self.point_backbone_config["backbone_output_dim"]
+        # 获取骨干网络输出维度
+        logger.info(f"Point backbone output dim: {backbone_output_dim}.")
+        # 记录点云骨干网络输出维度
+        logger.info(f"Use {self.point_backbone_config['projection_hidden_layer']} projection hiddent layers.")
+        # 记录使用的投影隐藏层数量
+        if self.point_backbone_config['projection_hidden_layer'] > 0:
+            # 如果投影隐藏层数量大于0
+            # Add projection layer with linear layers and GELU activation
+            # 添加带有线性层和GELU激活函数的投影层
+            projection_layers = []
+            # projection_layers.append(nn.LayerNorm(backbone_output_dim, eps=1e-5))
+            # 创建投影层列表
+            last_dim = backbone_output_dim
+            # 设置上一层的维度为骨干网络输出维度
+            for i in range(self.point_bert_config.model.projection_hidden_layer):
+                # 遍历每个投影隐藏层
+                projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["projection_hidden_dim"][i]))
+                # 添加线性层
+                projection_layers.append(nn.GELU())
+                # 添加GELU激活函数
+                last_dim = self.point_backbone_config["projection_hidden_dim"][i]
+                # 更新上一层维度
+
+            projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["project_output_dim"]))
+            # 添加最后的投影层
+            self.point_proj = nn.Sequential(*projection_layers)
+            # 创建顺序模型作为点云投影器
+            logger.info(f"Each layer with {self.point_bert_config.model.projection_hidden_dim} hidden units.")
+            # 记录每层的隐藏单元数量
+        else:
+            # 否则（没有投影隐藏层）
+            # Single layer
+            # 单层投影
+            self.point_proj = nn.Linear(backbone_output_dim, self.point_backbone_config['project_output_dim'])
+            # 创建单层线性投影
+        logger.info(f"Point projector output dim: {self.point_backbone_config['project_output_dim']}.")
+        # 记录点云投影器输出维度
+        
+        
     def __init__(self, config: Qwen2_5_VLTextConfig):
         # 初始化方法，接收LlamaConfig类型的配置参数
-        super(PointLLMLlamaModel, self).__init__(config)
+        super(Point_R1TextModel, self).__init__(config)
         # 调用父类的初始化方法
 
         self.point_backbone_type = config.point_backbone
@@ -76,14 +118,16 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
             print(f"Loading PointBERT config from {point_bert_config_addr}.")
             # 打印加载PointBERT配置文件的信息
             point_bert_config = cfg_from_yaml_file(point_bert_config_addr)
+            self.point_bert_config = point_bert_config
             # 从YAML文件中加载PointBERT配置
+            # print(point_bert_config,flush=True)
             if getattr(config, "use_color", False):
                 # 如果配置中启用了颜色信息
                 point_bert_config.model.point_dims = 6
                 # 设置点的维度为6（包含XYZ坐标和RGB颜色）
             use_max_pool = getattr(point_bert_config.model, "use_max_pool", False) # * default is false
             # 获取是否使用最大池化的配置，默认为False
-            
+            # print(point_bert_config,flush=True)
             self.point_backbone = PointTransformer(point_bert_config.model, use_max_pool=use_max_pool)
             # 创建PointTransformer骨干网络实例
             logger.info(f"Using {self.point_backbone.point_dims} dim of points.")
@@ -114,50 +158,23 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
             logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
             # 记录最大池化使用情况和点云token数量
 
-        # * print relevant info with projection layers
-        # 打印投影层相关信息
-        backbone_output_dim = self.point_backbone_config["backbone_output_dim"]
-        # 获取骨干网络输出维度
-        logger.info(f"Point backbone output dim: {backbone_output_dim}.")
-        # 记录点云骨干网络输出维度
-        logger.info(f"Use {self.point_backbone_config['projection_hidden_layer']} projection hiddent layers.")
-        # 记录使用的投影隐藏层数量
-        if self.point_backbone_config['projection_hidden_layer'] > 0:
-            # 如果投影隐藏层数量大于0
-            # Add projection layer with linear layers and GELU activation
-            # 添加带有线性层和GELU激活函数的投影层
-            projection_layers = []
-            # 创建投影层列表
-            last_dim = backbone_output_dim
-            # 设置上一层的维度为骨干网络输出维度
-            for i in range(point_bert_config.model.projection_hidden_layer):
-                # 遍历每个投影隐藏层
-                projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["projection_hidden_dim"][i]))
-                # 添加线性层
-                projection_layers.append(nn.GELU())
-                # 添加GELU激活函数
-                last_dim = self.point_backbone_config["projection_hidden_dim"][i]
-                # 更新上一层维度
-
-            projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["project_output_dim"]))
-            # 添加最后的投影层
-            self.point_proj = nn.Sequential(*projection_layers)
-            # 创建顺序模型作为点云投影器
-            logger.info(f"Each layer with {point_bert_config.model.projection_hidden_dim} hidden units.")
-            # 记录每层的隐藏单元数量
-        else:
-            # 否则（没有投影隐藏层）
-            # Single layer
-            # 单层投影
-            self.point_proj = nn.Linear(backbone_output_dim, self.point_backbone_config['project_output_dim'])
-            # 创建单层线性投影
-        logger.info(f"Point projector output dim: {self.point_backbone_config['project_output_dim']}.")
-        # 记录点云投影器输出维度
+        self.init_point_proj()
 
         self.fix_pointnet = False
         # 设置是否固定PointNet的参数为False
         self.fix_llm = False
         # 设置是否固定LLM的参数为False
+        self.post_init()
+    
+    def post_init(self):
+        super(Point_R1TextModel, self).post_init()
+        # # 对于nn.Linear层，避免梯度爆炸
+        # for module in self.modules():
+        #     if isinstance(module, nn.Linear):
+        #         nn.init.xavier_uniform_(module.weight)
+        #         nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+        #         if module.bias is not None:
+        #             nn.init.zeros_(module.bias)
 
     def load_point_backbone_checkpoint(self, checkpoint_path=None):
         # 加载点云骨干网络检查点的方法
@@ -265,7 +282,7 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
                     # 继续下一个样本
                 cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 513x2048 LxC
                 # # DEBUG
-                # cur_point_features = cur_point_features[:32]
+                # cur_point_features = torch.cat((cur_point_features[0:1], cur_point_features[1::16]), dim=0)
                 # 获取当前点云特征并移动到正确的设备
                 num_patches = cur_point_features.shape[0] # * number of point tokens 513(CLS + 512)
                 # 获取点token的数量
@@ -324,7 +341,7 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
             # 将新的输入嵌入堆叠成张量
 
-        return super(PointLLMLlamaModel, self).forward(
+        return super(Point_R1TextModel, self).forward(
             # 调用父类的前向传播方法
             input_ids=None, attention_mask=attention_mask, past_key_values=past_key_values,
             # 传递参数：输入ID设为None，注意力掩码，过去的键值对
@@ -337,19 +354,36 @@ class PointLLMLlamaModel(Qwen2_5_VLTextModel):
         )
 
 
-class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
-    # 定义PointLLM的因果语言模型类，继承自LlamaForCausalLM
-    config_class = PointLLMConfig
-    # 指定配置类为PointLLMConfig
+class Point_R1Config(Qwen2_5_VLConfig):
+    # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
+    model_type = "point_r1"
 
+
+class Point_R1Model(Qwen2_5_VLModel):
+    config_class = Point_R1Config
+    
+    def __init__(self, config):
+        super(Qwen2_5_VLModel, self).__init__(config)
+        self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(config.vision_config)
+        self.language_model = Point_R1TextModel._from_config(config.text_config)
+        self.rope_deltas = None  # cache rope_deltas here
+
+        # Initialize weights and apply final processing
+        self.post_init()
+    
+    def forward(self, *args, **kwargs):
+        return self.language_model(*args, **kwargs)
+
+class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
+    config_class = Point_R1Config
     def __init__(self, config):
         # 初始化方法
         super(Qwen2_5_VLForConditionalGeneration, self).__init__(config)
         # 调用LlamaForCausalLM的初始化方法
-        self.model = PointLLMLlamaModel(config.text_config)
+        self.model = Point_R1Model(config)
         # 创建PointLLM模型实例
 
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False) # 2048 x 151936
+        self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False) # 2048 x 151936
         # 创建语言模型头部，用于生成词汇表大小的输出
 
         # Initialize weights and apply final processing
@@ -367,35 +401,35 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
         self,
         # 自身引用
         input_ids: torch.LongTensor = None,
-        # 输入token的ID
+        # 输入token的ID Bx572(L)
         attention_mask: Optional[torch.Tensor] = None,
-        # 注意力掩码
+        # 注意力掩码 Bx572(L) input_ids.ne(self.tokenizer.pad_token_id)
         past_key_values: Optional[List[torch.FloatTensor]] = None,
         # 过去的键值对
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        # 输入嵌入
+        # 输入嵌入 None
         labels: Optional[torch.LongTensor] = None,
-        # 标签，用于计算损失
+        # 标签，用于计算损失 Bx572(L)
         use_cache: Optional[bool] = None, # * control whether to return past_key_values
-        # 是否使用缓存，控制是否返回过去的键值对
+        # 是否使用缓存，控制是否返回过去的键值对 None
         output_attentions: Optional[bool] = None,
-        # 是否输出注意力权重
+        # 是否输出注意力权重 None
         output_hidden_states: Optional[bool] = None,
-        # 是否输出隐藏状态
+        # 是否输出隐藏状态 None
         point_clouds: Optional[torch.FloatTensor] = None,
-        # 点云数据
+        # 点云数据 Bx8192x6
         return_dict: Optional[bool] = None,
-        # 是否返回字典格式
+        # 是否返回字典格式 None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # 返回类型为元组或带有过去状态的因果语言模型输出
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions # False
         # 设置注意力输出标志，如果未指定则使用配置中的值
         output_hidden_states = (
             # 设置隐藏状态输出标志
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
             # 如果未指定则使用配置中的值
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        ) # False
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict # True
         # 设置返回字典标志，如果未指定则使用配置中的值
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
@@ -574,10 +608,15 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
     
     def initialize_tokenizer_point_backbone_config(self, tokenizer, device, fix_llm=True):
         # 初始化分词器和点云骨干网络配置的方法
-
+        # 初始len(tokenizer):151665 
+        # https://qwen.readthedocs.io/zh-cn/latest/getting_started/concepts.html
+        # https://github.com/wangxso/Qwen2/blob/main/tokenization_note_zh.md
+        # 初始embedding大小：[151936, 2048] 
+        # 151936的原因与内存计算效率有关（151643个普通token+3个特殊token+205 个 extra token=151851）（得是128的倍数，得到151936）
+        # https://github.com/QwenLM/Qwen/issues/482
         config = self.config
         # 获取配置
-        point_backbone_config = self.get_model().point_backbone_config
+        point_backbone_config = self.get_model().language_model.point_backbone_config
         # 获取点云骨干网络配置
         mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
         # 设置是否使用点云开始和结束token
@@ -586,6 +625,7 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 获取默认点云补丁token
         point_backbone_config['default_point_patch_token'] = default_point_patch_token
         # 设置默认点云补丁token
+         # 151665
         tokenizer.add_tokens([default_point_patch_token], special_tokens=True) # * no need to update embed since it will be replaced
         # 向分词器添加点云补丁token，无需更新嵌入因为会被替换
         self.resize_token_embeddings(len(tokenizer)) # ! resize_token_embeddings will make the tokens trainable again
@@ -629,9 +669,9 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
                     dim=0, keepdim=True)
                     # 在第0维上计算平均值，保持维度
 
-                input_embeddings[-num_new_tokens:] = input_embeddings_avg
+                input_embeddings[-num_new_tokens:] = input_embeddings_avg.detach()
                 # 用平均值初始化新的输入嵌入
-                output_embeddings[-num_new_tokens:] = output_embeddings_avg
+                output_embeddings[-num_new_tokens:] = output_embeddings_avg.detach()
                 # 用平均值初始化新的输出嵌入
 
                 # need to update the input embeding, but no need to update the output embedding
@@ -642,7 +682,7 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
                     # 设置为可训练
                 if fix_llm:
                     # 如果固定LLM
-                    self.get_model().orig_embeds_params = [self.get_input_embeddings().weight.data.clone().to(device=device)] # * only tuning the new embeddings
+                    self.get_model().language_model.orig_embeds_params = [self.get_input_embeddings().weight.data.clone().to(device=device)] # * only tuning the new embeddings
                     # 保存原始嵌入参数，只调优新的嵌入
                     for p in self.get_output_embeddings().parameters(): # * the llm head
                         # 遍历输出嵌入（LLM头部）的参数
@@ -652,7 +692,7 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
                     # 打印设置信息
                 else:
                     # 否则
-                    self.get_model().orig_embeds_params = None
+                    self.get_model().language_model.orig_embeds_params = None
                     # 不保存原始嵌入参数
                     for p in self.get_output_embeddings().parameters():
                         # 遍历输出嵌入的参数
@@ -661,7 +701,7 @@ class PointLLMLlamaForCausalLM(Qwen2_5_VLForConditionalGeneration):
                     print("Setting output embeddings and all input embeddings trainable.")
                     # 打印设置信息
 
-AutoConfig.register("pointllm", PointLLMConfig)
+AutoConfig.register("point_r1", Point_R1Config)
 # 注册PointLLM配置类到AutoConfig
-AutoModelForCausalLM.register(PointLLMConfig, PointLLMLlamaForCausalLM)
+AutoModelForCausalLM.register(Point_R1Config, Point_R1ForCausalLM)
 # 注册PointLLM因果语言模型到AutoModelForCausalLM

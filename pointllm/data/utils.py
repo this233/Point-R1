@@ -300,7 +300,7 @@ def preprocess_multimodal_point_cloud(
         for sentence in source:  # 遍历每句话
             replace_token = default_point_patch_token * point_token_len  # 构造替换token
             # # DEBUG
-            # replace_token = default_point_patch_token * 32
+            # replace_token = default_point_patch_token * (1+32)
             if point_backbone_config['mm_use_point_start_end']:  # 如果使用开始和结束token
                 replace_token = point_backbone_config['default_point_start_token'] + replace_token + point_backbone_config['default_point_end_token']
             sentence["value"] = sentence["value"].replace(point_indicator, replace_token)  # 替换点云指示符
@@ -372,7 +372,7 @@ class DataCollatorForPointTextDataset(object):
         batch = dict(
             input_ids=input_ids,  # 输入token ID
             labels=labels,  # 标签
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),  # 注意力掩码
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),  # 注意力掩码 Bx572(L)
         )
 
         # 如果实例中包含点云数据
