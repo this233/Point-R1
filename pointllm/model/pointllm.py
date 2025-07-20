@@ -34,6 +34,8 @@ import sys
 import os
 # 导入操作系统接口模块，用于文件路径操作
 
+import torch.nn.functional as F
+
 # * add logger
 # 添加日志记录器
 import logging
@@ -46,6 +48,21 @@ logger.setLevel(logging.INFO)
 class Point_R1TextConfig(Qwen2_5_VLTextConfig):
     # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
     model_type = "point_r1_text"
+    def __init__(self, 
+        DEFAULT_POINT_PATCH_TOKEN: str = "<point_patch>",
+        DEFAULT_POINT_START_TOKEN: str = "<point_start>",
+        DEFAULT_POINT_END_TOKEN: str = "<point_end>",
+        mm_use_point_start_end: bool = True,
+        n_extra_tokens: int = 3,
+        **kwargs
+    ):
+        super(Point_R1TextConfig, self).__init__(**kwargs)
+        self.n_extra_tokens = n_extra_tokens
+        self.mm_use_point_start_end = mm_use_point_start_end
+        self.DEFAULT_POINT_PATCH_TOKEN = DEFAULT_POINT_PATCH_TOKEN
+        self.DEFAULT_POINT_START_TOKEN = DEFAULT_POINT_START_TOKEN
+        self.DEFAULT_POINT_END_TOKEN = DEFAULT_POINT_END_TOKEN
+
 
 class Point_R1TextModel(Qwen2_5_VLTextModel):
     # 定义PointLLM的Llama模型类，继承自LlamaModel
@@ -95,11 +112,17 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         # 记录点云投影器输出维度
         
         
-    def __init__(self, config: Qwen2_5_VLTextConfig):
+    def __init__(self, config: Point_R1TextConfig):
         # 初始化方法，接收LlamaConfig类型的配置参数
         super(Point_R1TextModel, self).__init__(config)
         # 调用父类的初始化方法
-
+        # self.extra_embedding = nn.Parameter(torch.empty(config.hidden_size, config.hidden_size))
+        if config.n_extra_tokens > 0:
+            self.extra_embedding = nn.Parameter(torch.zeros(config.n_extra_tokens, config.hidden_size))
+        else:
+            self.extra_embedding = None
+        # print("id(self.extra_embedding)",id(self.extra_embedding),flush=True,file=sys.stderr)
+        
         self.point_backbone_type = config.point_backbone
         # 从配置中获取点云骨干网络类型
         logger.info(f"Using {self.point_backbone_type}.")
@@ -162,12 +185,14 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
 
         self.fix_pointnet = False
         # 设置是否固定PointNet的参数为False
-        self.fix_llm = False
-        # 设置是否固定LLM的参数为False
+        # self.fix_llm = False
+        # # 设置是否固定LLM的参数为False
+        self.llm_train_type = "fix"
         self.post_init()
     
-    def post_init(self):
-        super(Point_R1TextModel, self).post_init()
+    # def post_init(self):
+    #     pass
+        # super(Point_R1TextModel, self).post_init()
         # # 对于nn.Linear层，避免梯度爆炸
         # for module in self.modules():
         #     if isinstance(module, nn.Linear):
@@ -208,12 +233,10 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
 
         # HACK: replace back original embeddings for pretraining
         # 技巧：为预训练替换回原始嵌入
-        orig_embeds_params = getattr(self, 'orig_embeds_params', None)
-        # 获取原始嵌入参数，如果不存在则返回None
-
         if inputs_embeds is None:
             # 如果输入嵌入为None
-            inputs_embeds = self.embed_tokens(input_ids)
+            # inputs_embeds = self.embed_tokens(input_ids)
+            inputs_embeds = F.embedding(input_ids, torch.cat((self.embed_tokens.weight, self.extra_embedding), dim=0))
             # 使用输入ID生成嵌入
 
         point_backbone = getattr(self, 'point_backbone', None)
@@ -300,14 +323,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                             # 如果点云结束token不在预期位置
                             raise ValueError("The point end token should follow the point start token.")
                             # 抛出值错误异常
-                        if orig_embeds_params is not None: # * will not update the original embeddings except for POINT_START_TOKEN and POINT_END_TOKEN
-                            # 如果有原始嵌入参数，则除了点云开始和结束token外不更新原始嵌入（走这条路）
-                            cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos].detach(), cur_input_embeds[point_start_token_pos:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:point_start_token_pos + num_patches + 2], cur_input_embeds[point_start_token_pos + num_patches + 2:].detach()), dim=0)
-                            # 拼接新的输入嵌入，保持某些部分不可训练
-                        else:
-                            # 否则
-                            cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0)
-                            # 直接拼接新的输入嵌入
+                        cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0)
                         cur_point_idx += 1
                         # 递增点云索引
                     new_input_embeds.append(cur_new_input_embeds)
@@ -326,22 +342,18 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                         # 如果点云补丁token不是连续的
                         raise ValueError("The point patch tokens should be consecutive.")
                         # 抛出值错误异常
-                    if orig_embeds_params is not None:
-                        # 如果有原始嵌入参数
-                        cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start].detach(), cur_point_features, cur_input_embeds[mask_index_start+num_patches:].detach()), dim=0)
-                        # 拼接新的输入嵌入，保持某些部分不可训练
-                    else:
-                        # 否则
-                        cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_point_features, cur_input_embeds[mask_index_start+num_patches:]), dim=0)
-                        # 直接拼接新的输入嵌入
+                    cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_point_features, cur_input_embeds[mask_index_start+num_patches:]), dim=0)
                     new_input_embeds.append(cur_new_input_embeds)
                     # 将新的输入嵌入添加到列表中
                     cur_point_idx += 1
+                    
                     # 递增点云索引
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
             # 将新的输入嵌入堆叠成张量
+            # print(inputs_embeds.shape)
+            # print(inputs_embeds)
 
-        return super(Point_R1TextModel, self).forward(
+        ans= super(Point_R1TextModel, self).forward(
             # 调用父类的前向传播方法
             input_ids=None, attention_mask=attention_mask, past_key_values=past_key_values,
             # 传递参数：输入ID设为None，注意力掩码，过去的键值对
@@ -352,12 +364,15 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
             return_dict=return_dict
             # 传递返回字典标志
         )
+        return ans
 
 
 class Point_R1Config(Qwen2_5_VLConfig):
     # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
     model_type = "point_r1"
-
+    def __init__(self, *args, **kwargs):
+        self.sub_configs["text_config"] = Point_R1TextConfig
+        super(Point_R1Config, self).__init__(*args, **kwargs)
 
 class Point_R1Model(Qwen2_5_VLModel):
     config_class = Point_R1Config
@@ -386,6 +401,10 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False) # 2048 x 151936
         # 创建语言模型头部，用于生成词汇表大小的输出
 
+        if config.text_config.n_extra_tokens > 0:
+            self.extra_lm_head = self.model.language_model.extra_embedding
+        else:
+            self.extra_lm_head = None
         # Initialize weights and apply final processing
         # 初始化权重并应用最终处理
         self.post_init()
@@ -460,7 +479,11 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 获取隐藏状态
         logits = self.lm_head(hidden_states) # 16x593x151668
         # 通过语言模型头部计算logits
-
+        if self.config.text_config.n_extra_tokens > 0:
+            logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
+        # print(self.extra_lm_head,flush=True,file=sys.stderr)
+        # print((hidden_states @ self.extra_lm_head.T).max(),flush=True,file=sys.stderr)
+        # exit()
         loss = None
         # 初始化损失为None
         if labels is not None:
@@ -488,7 +511,7 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             # print(f"Remainder: {shift_logits.numel() % self.config.vocab_size}", file=sys.stderr, flush=True)
             # print(f"=== END AFTER SHIFT DEBUG ===", file=sys.stderr, flush=True)
             
-            actual_vocab_size = self.lm_head.weight.shape[0]
+            actual_vocab_size = self.lm_head.weight.shape[0] + self.config.text_config.n_extra_tokens
             # 由于添加token，或者其他因素，config中的vocab_size可能不准确
             # Flatten the tokens
             # 展平tokens
@@ -504,7 +527,6 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             # 将标签移动到与logits相同的设备
             loss = loss_fct(shift_logits, shift_labels)
             # 计算损失
-
         if not return_dict:
             # 如果不返回字典格式
             output = (logits,) + outputs[1:]
@@ -512,7 +534,12 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             return (loss,) + output if loss is not None else output
             # 返回损失和输出，如果损失存在
 
-        return CausalLMOutputWithPast(
+        # print("--------------------------------")
+        # print(logits.shape)
+        # print(logits)
+        # print(outputs)
+        # self.generate()
+        ans= CausalLMOutputWithPast(
             # 返回因果语言模型输出
             loss=loss,
             # 损失
@@ -525,6 +552,8 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             attentions=outputs.attentions,
             # 注意力权重
         )
+        # print(ans)
+        return ans
 
     def prepare_inputs_for_generation(
         # 为生成准备输入的方法
@@ -569,7 +598,7 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 在阶段2或推理或无预训练推理时调用，假设分词器已有点token
         config = self.config
         # 获取配置
-        point_backbone_config = self.get_model().point_backbone_config
+        point_backbone_config = self.get_model().language_model.point_backbone_config
         # 获取点云骨干网络配置
         mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
         # 设置是否使用点云开始和结束token
@@ -605,8 +634,9 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             # 设置点云开始token的ID
             point_backbone_config["point_end_token"] = tokenizer.convert_tokens_to_ids([default_point_end_token])[0]
             # 设置点云结束token的ID
+        self.extra_lm_head = self.get_model().language_model.extra_embedding
     
-    def initialize_tokenizer_point_backbone_config(self, tokenizer, device, fix_llm=True):
+    def initialize_tokenizer_point_backbone_config(self, tokenizer, device):
         # 初始化分词器和点云骨干网络配置的方法
         # 初始len(tokenizer):151665 
         # https://qwen.readthedocs.io/zh-cn/latest/getting_started/concepts.html
@@ -614,6 +644,13 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 初始embedding大小：[151936, 2048] 
         # 151936的原因与内存计算效率有关（151643个普通token+3个特殊token+205 个 extra token=151851）（得是128的倍数，得到151936）
         # https://github.com/QwenLM/Qwen/issues/482
+
+        # print("initialize_tokenizer_point_backbone_config.",flush=True,file=sys.stderr)
+        # print("id(self.extra_lm_head)",id(self.extra_lm_head),flush=True,file=sys.stderr)
+        # print("id(self.get_model().language_model.extra_embedding)",id(self.get_model().language_model.extra_embedding),flush=True,file=sys.stderr)
+        self.resize_token_embeddings(len(tokenizer))
+        origin_tokenizer_len = len(tokenizer)
+
         config = self.config
         # 获取配置
         point_backbone_config = self.get_model().language_model.point_backbone_config
@@ -628,11 +665,11 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
          # 151665
         tokenizer.add_tokens([default_point_patch_token], special_tokens=True) # * no need to update embed since it will be replaced
         # 向分词器添加点云补丁token，无需更新嵌入因为会被替换
-        self.resize_token_embeddings(len(tokenizer)) # ! resize_token_embeddings will make the tokens trainable again
+         # ! resize_token_embeddings will make the tokens trainable again
         # 调整token嵌入大小，这会使token再次可训练
         point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]
         # 设置点云补丁token的ID
-
+        # self.resize_token_embeddings(len(tokenizer))
         if mm_use_point_start_end:
             # 如果使用点云开始和结束token
             default_point_start_token = config.DEFAULT_POINT_START_TOKEN
@@ -646,7 +683,7 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
 
             num_new_tokens = tokenizer.add_tokens([default_point_start_token, default_point_end_token], special_tokens=True)
             # 向分词器添加点云开始和结束token，返回新增token数量
-            self.resize_token_embeddings(len(tokenizer))
+            # self.resize_token_embeddings(len(tokenizer))
             # 调整token嵌入大小
             point_backbone_config["point_start_token"] = tokenizer.convert_tokens_to_ids([default_point_start_token])[0]
             # 设置点云开始token的ID
@@ -655,51 +692,40 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
 
             if num_new_tokens > 0:
                 # 如果有新增token
-                input_embeddings = self.get_input_embeddings().weight.data
+                input_embeddings = self.get_input_embeddings().weight
                 # 获取输入嵌入权重数据
-                output_embeddings = self.get_output_embeddings().weight.data
-                # 获取输出嵌入权重数据
+                extra_embedding = self.get_model().language_model.extra_embedding
 
-                input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(
-                    # 计算除新token外的输入嵌入平均值
-                    dim=0, keepdim=True)
-                    # 在第0维上计算平均值，保持维度
-                output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(
-                    # 计算除新token外的输出嵌入平均值
-                    dim=0, keepdim=True)
-                    # 在第0维上计算平均值，保持维度
+                point_cloud_start_tokens = tokenizer( "point start").input_ids
+                point_cloud_end_tokens = tokenizer("point end").input_ids
+                point_cloud_patch_tokens = tokenizer("point patch").input_ids
 
-                input_embeddings[-num_new_tokens:] = input_embeddings_avg.detach()
-                # 用平均值初始化新的输入嵌入
-                output_embeddings[-num_new_tokens:] = output_embeddings_avg.detach()
-                # 用平均值初始化新的输出嵌入
+                point_cloud_start_embedding_avg = input_embeddings[point_cloud_start_tokens].mean(dim=0)
+                point_cloud_end_embedding_avg = input_embeddings[point_cloud_end_tokens].mean(dim=0)
+                point_cloud_patch_embedding_avg = input_embeddings[point_cloud_patch_tokens].mean(dim=0) 
 
-                # need to update the input embeding, but no need to update the output embedding
-                # 需要更新输入嵌入，但不需要更新输出嵌入
+                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_start_token])[0]-origin_tokenizer_len] = point_cloud_start_embedding_avg.clone().detach()
+                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_end_token])[0]-origin_tokenizer_len] = point_cloud_end_embedding_avg.clone().detach()
+                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]-origin_tokenizer_len] = point_cloud_patch_embedding_avg.clone().detach()
+
+                self.extra_lm_head = self.get_model().language_model.extra_embedding
+                # print("#1",self.get_model().language_model.extra_embedding[0],flush=True,file=sys.stderr)
+                # print("#2",self.get_model().language_model.extra_embedding[1],flush=True,file=sys.stderr)
+                # print("#3",self.get_model().language_model.extra_embedding[2],flush=True,file=sys.stderr)
+                # print("#1",self.extra_lm_head[0],flush=True,file=sys.stderr)
+                # print("#2",self.extra_lm_head[1],flush=True,file=sys.stderr)
+                # print("#3",self.extra_lm_head[2],flush=True,file=sys.stderr)
+                # print("id(self.extra_lm_head)",id(self.extra_lm_head),flush=True,file=sys.stderr)
+                # print("id(self.get_model().language_model.extra_embedding)",id(self.get_model().language_model.extra_embedding),flush=True,file=sys.stderr)
+                
+
                 for p in self.get_input_embeddings().parameters():
                     # 遍历输入嵌入的参数
-                    p.requires_grad = True
+                    p.requires_grad = False
                     # 设置为可训练
-                if fix_llm:
-                    # 如果固定LLM
-                    self.get_model().language_model.orig_embeds_params = [self.get_input_embeddings().weight.data.clone().to(device=device)] # * only tuning the new embeddings
-                    # 保存原始嵌入参数，只调优新的嵌入
-                    for p in self.get_output_embeddings().parameters(): # * the llm head
-                        # 遍历输出嵌入（LLM头部）的参数
-                        p.requires_grad = False
-                        # 设置为不可训练
-                    print(f"Setting output embeddings fixed and {num_new_tokens} new tokens' input embeddings trainable.")
-                    # 打印设置信息
-                else:
-                    # 否则
-                    self.get_model().language_model.orig_embeds_params = None
-                    # 不保存原始嵌入参数
-                    for p in self.get_output_embeddings().parameters():
-                        # 遍历输出嵌入的参数
-                        p.requires_grad = True
-                        # 设置为可训练
-                    print("Setting output embeddings and all input embeddings trainable.")
-                    # 打印设置信息
+                self.get_model().language_model.extra_embedding.requires_grad_(True)
+                print(f"Setting output embeddings fixed and {num_new_tokens} new tokens' input embeddings trainable.")
+        # exit()
 
 AutoConfig.register("point_r1", Point_R1Config)
 # 注册PointLLM配置类到AutoConfig

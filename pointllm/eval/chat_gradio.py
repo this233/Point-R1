@@ -11,6 +11,7 @@ import numpy as np
 from pointllm.data import pc_norm, farthest_point_sample
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 # Additional import for gradio
 import gradio as gr
@@ -20,7 +21,6 @@ import objaverse
 import time
 
 import logging
-
 
 def change_input_method(input_method):
     if input_method == 'File':
@@ -41,23 +41,24 @@ def init_model(args):
     logging.warning(f'Model name: {os.path.basename(model_name)}')
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = PointLLMLlamaForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
+    model = Point_R1ForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
 
     model.eval()
 
     mm_use_point_start_end = getattr(model.config, "mm_use_point_start_end", False)
     # Add special tokens ind to model.point_config
-    point_backbone_config = model.get_model().point_backbone_config
+    point_backbone_config = model.get_model().language_model.point_backbone_config
     
-    conv = conv_templates["vicuna_v1_1"].copy()
+    # conv = conv_templates["vicuna_v1_1"].copy()
+    conv = []
 
-    stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-    keywords = [stop_str]
+    # stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+    # keywords = [stop_str]
     
-    return model, tokenizer, point_backbone_config, keywords, mm_use_point_start_end, conv
+    return model, tokenizer, point_backbone_config, mm_use_point_start_end, conv
 
-def start_conversation(args, model, tokenizer, point_backbone_config, keywords, mm_use_point_start_end, conv):
+def start_conversation(args, model, tokenizer, point_backbone_config, mm_use_point_start_end, conv):
     point_token_len = point_backbone_config['point_token_len']
     default_point_patch_token = point_backbone_config['default_point_patch_token']
     default_point_start_token = point_backbone_config['default_point_start_token']
@@ -71,7 +72,8 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
         logging.warning("-" * 80)
 
         # Reset the conversation template
-        conv.reset()
+        # conv.reset()
+        conv.clear()
 
         def confirm_point_cloud(input_choice, object_id_input, point_cloud_input, chatbot, answer_time, conv):
             objects = None
@@ -91,7 +93,8 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                 logging.warning(f"Object_id: {object_id_input}")
 
                 object_uids = [object_id_input]
-                objects = objaverse.load_objects(uids=object_uids)
+                # objects = objaverse.load_objects(uids=object_uids)
+                objects = {object_id_input:os.path.join(args.data_path, "{}_8192.npy".format(object_id_input))}
             print("%" * 80)
             logging.warning("%" * 80)
 
@@ -173,7 +176,8 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
             point_clouds = torch.from_numpy(point_clouds).unsqueeze_(0).to(torch.float32).cuda()
             
             answer_time = 0
-            conv.reset()
+            # conv.reset()
+            conv.clear()
             
             outputs = "<span style='color: red;'>[System] New Point Cloud</span>" 
             chatbot = chatbot + [[None, outputs]]
@@ -197,10 +201,14 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                     else:
                         qs = default_point_patch_token * point_token_len + '\n' + qs
 
-                # Append the new message to the conversation history
-                conv.append_message(conv.roles[0], qs)
-                conv.append_message(conv.roles[1], None)
-                prompt = conv.get_prompt()
+                # # Append the new message to the conversation history
+                # conv.append_message(conv.roles[0], qs)
+                # conv.append_message(conv.roles[1], None)
+                # messages=[]
+                # messages.append({"role": "user", "content": qs})
+                # conv.append(messages)
+                conv.append({"role": "user", "content": qs})
+                prompt = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=True)
                 print("#" * 80)
                 print(f'{prompt.replace("<point_patch>" * point_token_len, f"<point_patch> * {point_token_len}")}') # for concise printing
                 print("#" * 80)
@@ -212,22 +220,24 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
 
                 input_ids = torch.as_tensor(inputs.input_ids).cuda()
 
-                stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
-                stop_str = keywords[0]
+                # stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
+                # stop_str = keywords[0]
 
                 try:
-                    if input_ids.shape[1] >= 2047:
-                        raise ValueError("Current context length exceeds the maximum context length (2048) of the model.")
+                    if input_ids.shape[1] >= 1023:
+                        raise ValueError("Current context length exceeds the maximum context length (1024) of the model.")
                     with torch.inference_mode():
+                        # print("!!", input_ids.shape)
                         output_ids = model.generate(
                             input_ids,
+                            attention_mask=input_ids.ne(tokenizer.pad_token_id),
                             point_clouds=point_clouds,
                             do_sample=True,
                             temperature=1.0,
                             top_k=50,
-                            max_length=2048,
-                            top_p=0.95,
-                            stopping_criteria=[stopping_criteria])
+                            max_length=1024,
+                            top_p=0.95)
+                        # print("!!",output_ids)
 
                     input_token_len = input_ids.shape[1]
                     n_diff_input_output = (input_ids != output_ids[:, :input_token_len]).sum().item()
@@ -236,15 +246,22 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                         logging.warning(f'{n_diff_input_output} output_ids are not the same as the input_ids')
                     outputs = tokenizer.batch_decode(output_ids[:, input_token_len:], skip_special_tokens=True)[0]
                     outputs = outputs.strip()
-                    if outputs.endswith(stop_str):
-                        outputs = outputs[:-len(stop_str)]
+                    # if outputs.endswith(stop_str):
+                    #     outputs = outputs[:-len(stop_str)]
                     outputs = outputs.strip()
 
                     # Append the model's response to the conversation history
-                    conv.pop_last_none_message()
-                    conv.append_message(conv.roles[1], outputs)
-                    print(f'{conv.roles[1]}: {outputs}\n')
-                    logging.warning(f'{conv.roles[1]}: {outputs}\n')
+                    # conv.pop_last_none_message()
+                    # conv.append_message(conv.roles[1], outputs)
+                    # print(f'{conv.roles[1]}: {outputs}\n')
+                    # logging.warning(f'{conv.roles[1]}: {outputs}\n')
+                    # messages.append({"role": "assistant", "content": outputs})
+                    # print(f'{messages[-1]["role"]}: {outputs}\n')
+                    # logging.warning(f'{messages[-1]["role"]}: {outputs}\n')
+                    conv.append({"role": "assistant", "content": outputs})
+                    print(f'{conv[-1]["role"]}: {outputs}\n')
+                    logging.warning(f'{conv[-1]["role"]}: {outputs}\n')
+                    # print(f"conv: {conv}")
                     answer_time += 1
                     history[-1][1] = ""
                     for character in outputs:
@@ -255,8 +272,8 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                     print(f"[ERROR] {e}")
                     logging.warning(f"[ERROR] {e}")
 
-                    if input_ids.shape[1] >= 2047:
-                        chatbot_system_message = "Current context length exceeds the maximum context length (2048) of the model. Please press 'Clear' to restart."
+                    if input_ids.shape[1] >= 1023:
+                        chatbot_system_message = "Current context length exceeds the maximum context length (1😯4) of the model. Please press 'Clear' to restart."
                     else:
                         chatbot_system_message = "Sorry. There is something wrong when generating. Please check the your uploaded point cloud or the Objaverse id, and \
                         confirm the point cloud again."
@@ -270,7 +287,7 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
         with gr.Blocks() as demo:
             answer_time = gr.State(value=0)
             point_clouds = gr.State(value=None)
-            conv_state = gr.State(value=conv.copy())
+            conv_state = gr.State(value=conv)
             gr.Markdown(
                 """
                 # PointLLM: Empowering Large Language Models to Understand Point Clouds. 🚀
@@ -293,8 +310,10 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                         return "", history + [[user_message, None]]
                     
                     def clear_conv(history, conv):
-                        conv.reset()
-                        return None, 0
+                        # conv.reset()
+                        # list
+                        conv.clear()
+                        return [], 0
 
                     with gr.Row():
                         text_input = gr.Textbox(
@@ -345,7 +364,7 @@ def start_conversation(args, model, tokenizer, point_backbone_config, keywords, 
                 """
             )
         demo.queue()
-        demo.launch(server_name="0.0.0.0", server_port=args.port, share=False)    # server_port=7832, share=True
+        demo.launch(server_name="0.0.0.0", server_port=args.port, share=False, allowed_paths=[args.data_path])    # server_port=7832, share=True
     
 if __name__ == "__main__":
     # ! To release this demo in public, make sure to start in a place where no important data is stored.
@@ -353,14 +372,14 @@ if __name__ == "__main__":
     # ! refer to https://www.gradio.app/guides/sharing-your-app#security-and-file-access
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, \
-         default="RunsenXu/PointLLM_7B_v1.2")
+         default="./outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1")
 
 
-    parser.add_argument("--data_path", type=str, default="data/objaverse_data", required=False)
+    parser.add_argument("--data_path", type=str, default="./data/objaverse_data", required=False)
     parser.add_argument("--pointnum", type=int, default=8192)
 
-    parser.add_argument("--log_file", type=str, default="serving_workdirs/serving_log.txt")
-    parser.add_argument("--tmp_dir", type=str, default="serving_workdirs/tmp")
+    parser.add_argument("--log_file", type=str, default="./working/serving_log.txt")
+    parser.add_argument("--tmp_dir", type=str, default="./working/tmp")
 
     # For gradio
     parser.add_argument("--port", type=int, default=7810)
@@ -390,5 +409,5 @@ if __name__ == "__main__":
     # * set env variable GRADIO_TEMP_DIR to args.tmp_dir
     os.environ["GRADIO_TEMP_DIR"] = args.tmp_dir
 
-    model, tokenizer, point_backbone_config, keywords, mm_use_point_start_end, conv = init_model(args)
-    start_conversation(args, model, tokenizer, point_backbone_config, keywords, mm_use_point_start_end, conv)
+    model, tokenizer, point_backbone_config, mm_use_point_start_end, conv = init_model(args)
+    start_conversation(args, model, tokenizer, point_backbone_config, mm_use_point_start_end, conv)

@@ -35,6 +35,9 @@ import transformers
 # 导入自定义的PointLLM训练器
 from pointllm.train.pointllm_trainer import PointLLMTrainer
 
+# LoRA/PEFT支持
+from peft import get_peft_model, LoraConfig
+
 # 导入对话相关模块
 from pointllm import conversation as conversation_lib
 # 导入模型相关模块
@@ -61,7 +64,7 @@ class ModelArguments:
     # 模型名称或路径
     model_name_or_path: Optional[str] = field(default="")
     # 模型版本
-    version: Optional[str] = field(default="v1")
+    # version: Optional[str] = field(default="v1")
 
 @dataclass
 class DataArguments:
@@ -101,7 +104,8 @@ class TrainingArguments(transformers.TrainingArguments):
     # 是否使用小模型进行调试
     model_debug: bool = field(default=False, metadata={"help": "Whether to use small model."})
     # 是否固定LLM参数
-    fix_llm: bool = field(default=True, metadata={"help": "Whether to fix the LLM."})
+    # fix_llm: bool = field(default=True, metadata={"help": "Whether to fix the LLM."})
+    llm_train_type: str = field(default="fix", metadata={"help": "LLM train type. Can be 'fix' or 'lora'."})
     # 是否固定PointNet参数
     fix_pointnet: bool = field(default=True, metadata={"help": "Whether to fix the PointNet."})
 
@@ -114,13 +118,21 @@ class TrainingArguments(transformers.TrainingArguments):
     # 是否调整多模态MLP适配器，预训练时设为True，微调时设为False
     tune_mm_mlp_adapter: bool = field(default=True)
     # 是否为第二阶段训练，微调时设为True
-    stage_2: bool = field(default=False)
+    stage: int = field(default=1)
     # 预训练的多模态MLP适配器路径
     pretrained_mm_mlp_adapter: Optional[str] = field(default=None)
     # 是否分离点标记（已弃用）
     detatch_point_token: bool = field(default=False)
     # 点云骨干网络检查点路径
     point_backbone_ckpt: str = field(default=None)
+    # LoRA相关参数
+    # lora_enable: bool = field(default=False, metadata={"help": "是否启用LoRA微调"})
+    lora_r: int = field(default=8, metadata={"help": "LoRA秩"})
+    lora_alpha: int = field(default=32, metadata={"help": "LoRA alpha参数"})
+    lora_dropout: float = field(default=0.1, metadata={"help": "LoRA dropout"})
+    lora_target_modules: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj", metadata={"help": "逗号分隔的LoRA注入模块名，如q_proj,v_proj"})
+
+    train_norm: bool = field(default=False, metadata={"help": "Whether to train the norm."})
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
@@ -173,27 +185,88 @@ def train():
             # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
         )
 
-    # 打印model.dtype
-    logger.info(f"1 model.dtype: {model.dtype}")
-    # 禁用模型缓存
-    model.config.use_cache = False
-
-    # 根据fix_llm标志决定是否固定LLM参数
-    if training_args.fix_llm:
+    # 根据llm_train_type标志决定是否固定LLM参数
+    if training_args.llm_train_type == "fix":
         # 固定所有参数
-        logger.info("LLM is fixed. Fix_llm flag is set to True")
+        logger.info("LLM is fixed. llm_train_type is set to 'fix'")
         # 固定llama、lm_head、pointnet、投影层参数
         model.requires_grad_(False)
         # 设置模型的fix_llm标志
-        model.get_model().language_model.fix_llm = True
+        model.get_model().language_model.llm_train_type = "fix"
         # 设置点云投影层为可训练
         model.get_model().language_model.point_proj.requires_grad_(True)
         # 设置点云骨干网络为可训练（为FSDP设置为True，使用fix_pointnet标志控制）
         model.get_model().language_model.point_backbone.requires_grad_(True)
-    else:
+        # 设置extra_lm_head为可训练
+        model.get_model().language_model.extra_embedding.requires_grad_(True)
+        
+    elif training_args.llm_train_type == "lora":
         # LLM可训练
-        model.get_model().language_model.fix_llm = False
-        logger.warning("LLM is trainable. Fix_llm flag is set to False")
+        model.get_model().language_model.llm_train_type = "lora"
+        logger.warning("LLM is trainable. llm_train_type is set to 'lora'")
+
+        model.requires_grad_(False)
+        model.get_model().language_model.llm_train_type = "fix"
+        # 设置点云投影层为可训练
+        lora_target_modules = [x.strip() for x in training_args.lora_target_modules.split(",") if x.strip()]
+        for name, param in model.named_modules():
+            print(f"Parameter {name}")
+        lora_target_modules_regex = ".*\.language_model\..*\.("
+        first=True
+        for module in lora_target_modules:
+            if first:
+                lora_target_modules_regex += module
+                first=False
+            else:
+                lora_target_modules_regex += "|" + module
+        lora_target_modules_regex += ")"
+        print(lora_target_modules_regex)
+        # lora_target_modules = ['language_model\.layers.*\.'+x for x in lora_target_modules]
+        lora_config = LoraConfig(
+            r=training_args.lora_r,
+            lora_alpha=training_args.lora_alpha,
+            target_modules=lora_target_modules_regex,
+            lora_dropout=training_args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+        model = get_peft_model(model, lora_config)
+        print(model)
+    
+    if training_args.train_norm:
+        model.get_model().language_model.point_proj.requires_grad_(True)
+        # 设置点云骨干网络为可训练（为FSDP设置为True，使用fix_pointnet标志控制）
+        model.get_model().language_model.point_backbone.requires_grad_(True)
+        model.get_model().language_model.extra_embedding.requires_grad_(True)
+        for layer in model.get_model().language_model.layers:
+            layer.input_layernorm.requires_grad_(True)
+            layer.post_attention_layernorm.requires_grad_(True)
+        model.get_model().language_model.norm.requires_grad_(True)
+
+        
+    # # LoRA微调支持 - 在requires_grad设置之后应用
+    # if getattr(training_args, "lora_enable", False):
+    #     print("[INFO] Enabling LoRA fine-tuning...")
+    #    
+        
+        
+        
+    #     # 打印LoRA应用后的模型信息
+    #     print("[INFO] LoRA applied successfully!")
+    #     print(f"[INFO] LoRA target modules: {lora_target_modules}")
+    #     print(f"[INFO] LoRA rank: {training_args.lora_r}")
+    #     print(f"[INFO] LoRA alpha: {training_args.lora_alpha}")
+        
+    #     # 确保LoRA参数可训练
+    #     for name, param in model.named_parameters():
+    #         if "lora_" in name:
+    #             param.requires_grad = True
+    #             print(f"[DEBUG] LoRA parameter {name} is trainable")
+
+    # # 打印model.dtype
+    # logger.info(f"1 model.dtype: {model.dtype}")
+    # # 禁用模型缓存
+    # model.config.use_cache = False
 
     # 从预训练模型加载分词器
     tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -204,33 +277,35 @@ def train():
         use_fast=False,
     )
 
-    # 根据模型版本设置分词器和对话模板
-    if model_args.version == "v0" or "v0" in model_args.model_name_or_path:
-        # v0版本已弃用
-        raise ValueError("v0 is deprecated.")
-    else:
-        # print("!!!!",tokenizer.pad_token,tokenizer.unk_token)
-        # 设置填充标记为未知标记
-        # tokenizer.pad_token = tokenizer.unk_token
-        # 设置默认对话模板
-        conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1_1"]
+    # # 根据模型版本设置分词器和对话模板
+    # if model_args.version == "v0" or "v0" in model_args.model_name_or_path:
+    #     # v0版本已弃用
+    #     raise ValueError("v0 is deprecated.")
+    # else:
+    #     # print("!!!!",tokenizer.pad_token,tokenizer.unk_token)
+    #     # 设置填充标记为未知标记
+    #     # tokenizer.pad_token = tokenizer.unk_token
+    #     # 设置默认对话模板
+    #     conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1_1"]
 
     # 根据fix_pointnet标志决定是否固定点云骨干网络
     if not training_args.fix_pointnet:
         # 点云骨干网络可训练
         logger.info("Point backbone is trainable. Fix_pointnet flag is set to False, pointnet grad will be recorded.")
         model.get_model().language_model.fix_pointnet = False
+        
     else:
         # 固定点云骨干网络
         logger.info("Point backbone is fixed. Fix_pointnet flag is set to True, pointnet grad will not be recorded.")
         # 使用torch.inference_mode控制，不使用requires_grad（为FSDP第二阶段考虑）
         model.get_model().language_model.fix_pointnet = True
+        model.get_model().language_model.point_backbone.requires_grad_(False)
         # 如果不是第二阶段训练
-        if not training_args.stage_2:
-            logger.info("Set requires_grad of point backbone to False")
-            # 为第一阶段固定点云网络，第二阶段FSDP需要
-            model.get_model().language_model.point_backbone.requires_grad_(False)
-    
+        # if not training_args.stage == 2:
+        #     logger.info("Set requires_grad of point backbone to False")
+        #     # 为第一阶段固定点云网络，第二阶段FSDP需要
+        #     model.get_model().language_model.point_backbone.requires_grad_(False)
+ 
     # 根据tune_mm_mlp_adapter标志决定是否训练投影层
     if training_args.tune_mm_mlp_adapter:
         # 投影层可训练
@@ -243,13 +318,13 @@ def train():
         logger.info("Point prejcetion layer is fixed.")
 
     # 根据训练阶段加载不同的配置
-    if not training_args.stage_2:
+    if training_args.stage == 1:   
         # 第一阶段：假设需要从检查点加载llm、point_backbone和投影层
         print(f"Default point_backbone_ckpt is {training_args.point_backbone_ckpt}.")
         # 加载点云骨干网络检查点
         model.get_model().language_model.load_point_backbone_checkpoint(training_args.point_backbone_ckpt)
         # 初始化分词器和点云骨干网络配置
-        model.initialize_tokenizer_point_backbone_config(tokenizer=tokenizer, device=training_args.device, fix_llm=training_args.fix_llm)
+        model.initialize_tokenizer_point_backbone_config(tokenizer=tokenizer, device=training_args.device)
     else:
         # 第二阶段
         # 初始化分词器和点云骨干网络配置（不包含嵌入）
@@ -270,6 +345,7 @@ def train():
     #     logger.info("Gradient checkpointing enabled successfully.")
 
     # 获取不需要梯度的参数列表
+    # print("!! ",training_args.fsdp) # =[]
     # params_no_grad = [n for n, p in model.named_parameters() if not p.requires_grad]
     # # 如果存在不需要梯度的参数
     # if len(params_no_grad) > 0:
@@ -308,7 +384,7 @@ def train():
     print("#########################")
     for name, param in model.named_parameters():
         if param.requires_grad:
-            print(f"Parameter {name} swill be updated. size: {param.size()}")
+            print(f"Parameter {name} will be updated. size: {param.size()}")
         
 
     print("#########################")

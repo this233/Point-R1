@@ -14,3 +14,5 @@ serving_workdirs
 data
 env
 *.log
+working
+tmp.log

@@ -11,7 +11,7 @@ export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 model_name_or_path=checkpoints/Qwen2.5-VL-3B-Instruct-Point
 data_path=data/objaverse_data
 anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage1_v2/$filename
+output_dir=outputs/PointLLM_train_stage1_v3/$filename
 point_backbone_ckpt=checkpoints/Qwen2.5-VL-3B-Instruct-Point/point_bert_v1.2.pt
 
 # PYTHONPATH=.:$PYTHONPATH \
@@ -47,7 +47,7 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --bf16 True \
-    --fix_llm True \
+    --llm_train_type fix \
     --fix_pointnet True \
     --gradient_checkpointing True \
     --run_name $filename \
@@ -58,7 +58,7 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --max_grad_norm 1.0  \
     --seed 42 \
     --data_seed 42 \
-    --run_name stage1-only_point_proj
+    --run_name stage1-point_proj_and_embedding
 
     # --evaluation_strategy "no" \
     # --max_grad_norm 1.0 \
