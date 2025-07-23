@@ -73,6 +73,10 @@ GPT_PRICES = {
     "gpt-4-1106-preview":{
         "price_1k_prompt_tokens": 0.01,
         "price_1k_completion_tokens": 0.03
+    },
+    "gpt-4":{
+        "price_1k_prompt_tokens": 0.03,
+        "price_1k_completion_tokens": 0.06
     }
 }
 
@@ -821,7 +825,7 @@ if __name__ == "__main__":
     parser.add_argument("--results_path", type=str, \
                         default="", help="Path to the results file.")
     parser.add_argument("--output_dir", type=str, default=None, help="Path to the output directory.")
-    parser.add_argument("--model_type", type=str, default="gpt-4-0613", choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview"], help="Type of the model used to evaluate.")
+    parser.add_argument("--model_type", type=str, default="gpt-4-0613", choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4"], help="Type of the model used to evaluate.")
     parser.add_argument("--parallel", default=True, action="store_true", help="Whether to use parallel evaluation.")
     parser.add_argument("--num_workers", type=int, default=15, help="Number of workers to use for parallel evaluation.")
     parser.add_argument("--eval_type", type=str, choices=["modelnet-close-set-classification", "open-free-form-classification", "object-captioning"], default="object-captioning")

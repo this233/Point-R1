@@ -20,7 +20,7 @@ dependencies = [
     "shortuuid",
     "deepspeed", "peft",
     "transformers>=4.51",
-    "openai", "tqdm",
+    "openai==0.28.1", "tqdm",
     "easydict", "timm==0.4.12", "ftfy==6.0.1", "regex", "open3d==0.16.0", "h5py", "termcolor",
     "plyfile", "nltk", "rouge", "scikit-learn", "py-rouge", "trl", "objaverse"
 ]

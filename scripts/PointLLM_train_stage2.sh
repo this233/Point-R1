@@ -8,10 +8,10 @@ export LDFLAGS="-Wl,--no-as-needed -ldl -laio"
 
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
-model_name_or_path=outputs/PointLLM_train_stage1_v3/PointLLM_train_stage1
+model_name_or_path=outputs/PointLLM_train_stage1_v5/PointLLM_train_stage1
 data_path=data/objaverse_data
 anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage2_v2/$filename
+output_dir=outputs/PointLLM_train_stage2_v6/$filename
 
 # PYTHONPATH=.:$PYTHONPATH \
 
@@ -40,7 +40,7 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --save_steps 2400 \
     --stage 2 \
     --save_total_limit 1 \
-    --learning_rate 3e-5 \
+    --learning_rate 1e-4 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
@@ -56,10 +56,13 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --max_grad_norm 1.0  \
     --seed 42 \
     --data_seed 42 \
-    --run_name stage1-point_proj_llmlora_norm \
+    --run_name stage2-point_proj_llmlora_norm_32 \
     --train_norm True \
-    --lora_r 32 \
-    --lora_alpha 64 \
+    --train_point_proj True \
+    --train_point_backbone True \
+    --train_extra_embedding True \
+    --lora_r 16 \
+    --lora_alpha 32 \
     --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
 
 

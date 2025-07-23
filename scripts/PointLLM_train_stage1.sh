@@ -11,7 +11,7 @@ export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 model_name_or_path=checkpoints/Qwen2.5-VL-3B-Instruct-Point
 data_path=data/objaverse_data
 anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage1_v3/$filename
+output_dir=outputs/PointLLM_train_stage1_v6/$filename
 point_backbone_ckpt=checkpoints/Qwen2.5-VL-3B-Instruct-Point/point_bert_v1.2.pt
 
 # PYTHONPATH=.:$PYTHONPATH \
@@ -32,23 +32,22 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --data_path $data_path \
     --anno_path $anno_path \
     --output_dir $output_dir \
-    --version v1 \
     --model_max_length 1024 \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 8 \
+    --per_device_train_batch_size 6 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 1 \
     --save_strategy "no" \
     --save_steps 2400 \
     --save_total_limit 1 \
-    --learning_rate 3e-5 \
+    --learning_rate 1e-4 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --bf16 True \
-    --llm_train_type fix \
-    --fix_pointnet True \
+    --stage 1 \
+    --llm_train_type lora \
     --gradient_checkpointing True \
     --run_name $filename \
     --point_backbone_ckpt $point_backbone_ckpt \
@@ -58,7 +57,11 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --max_grad_norm 1.0  \
     --seed 42 \
     --data_seed 42 \
-    --run_name stage1-point_proj_and_embedding
+    --run_name stage1-point_proj_and_embedding_and_pointbackbone \
+    --train_norm True \
+    --train_point_proj True \
+    --train_point_backbone True \
+    --train_extra_embedding True \
 
     # --evaluation_strategy "no" \
     # --max_grad_norm 1.0 \

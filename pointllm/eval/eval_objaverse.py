@@ -11,6 +11,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from pointllm.eval.evaluator import start_evaluation
 
+from peft import PeftModel
 import os
 import json
 
@@ -44,19 +45,25 @@ def init_model(args):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
     # 加载模型，使用bfloat16精度以节省显存
-    model = PointLLMLlamaForCausalLM.from_pretrained(
-        model_name, 
-        low_cpu_mem_usage=False, 
-        use_cache=True, 
-        torch_dtype=torch.bfloat16
-    ).cuda()
+    # model = Point_R1ForCausalLM.from_pretrained(
+    #     model_name, 
+    #     low_cpu_mem_usage=False, 
+    #     use_cache=True, 
+    #     torch_dtype=torch.bfloat16
+    # ).cuda()
     
-    # 初始化分词器和点云骨干网络配置
+    # # 初始化分词器和点云骨干网络配置
+    # model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
+    model = Point_R1ForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
+    if "PointLLM_train_stage1" not in model_name:
+        model = PeftModel.from_pretrained(model, model_name)
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
+    model.eval()
 
     # 设置对话模式为vicuna_v1_1
-    conv_mode = "vicuna_v1_1"
-    conv = conv_templates[conv_mode].copy()
+    # conv_mode = "vicuna_v1_1"
+    # conv = conv_templates[conv_mode].copy()
+    conv = []
 
     return model, tokenizer, conv
 
@@ -104,7 +111,7 @@ def get_dataloader(dataset, batch_size, shuffle=False, num_workers=4):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
     return dataloader
 
-def generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteria, do_sample=True, temperature=1.0, top_k=50, max_length=2048, top_p=0.95):
+def generate_outputs(model, tokenizer, input_ids, point_clouds, do_sample=True, temperature=1.0, top_k=50, max_length=2048, top_p=0.95):
     """
     生成模型输出
     Generate model outputs
@@ -126,15 +133,16 @@ def generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteri
     """
     model.eval()  # 设置模型为评估模式
     with torch.inference_mode():  # 使用推理模式以节省显存
+        # print(input_ids)
         output_ids = model.generate(
             input_ids,
+            attention_mask=input_ids.ne(tokenizer.pad_token_id),
             point_clouds=point_clouds,
             do_sample=do_sample,
             temperature=temperature,
             top_k=top_k,
             max_length=max_length,
-            top_p=top_p,
-            stopping_criteria=[stopping_criteria]
+            top_p=top_p
         )  # 生成输出，形状为 B, L'
 
     # 计算输入token的长度
@@ -170,7 +178,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         dict: 包含所有结果的字典
     """
     # 获取停止字符串
-    stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+    # stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
     
     # 根据提示词索引选择问题
     qs = PROMPT_LISTS[prompt_index]
@@ -179,8 +187,10 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
     results = {"prompt": qs}
 
     # 获取点云骨干网络的配置
-    point_backbone_config = model.get_model().point_backbone_config
+    point_backbone_config = model.get_model().language_model.point_backbone_config
     point_token_len = point_backbone_config['point_token_len']
+    # DEBUG
+    # point_token_len = 1+64
     default_point_patch_token = point_backbone_config['default_point_patch_token']
     default_point_start_token = point_backbone_config['default_point_start_token']
     default_point_end_token = point_backbone_config['default_point_end_token']
@@ -195,18 +205,22 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         qs = default_point_patch_token * point_token_len + '\n' + qs
     
     # 构建对话
-    conv.append_message(conv.roles[0], qs)  # 用户消息
-    conv.append_message(conv.roles[1], None)  # 助手消息（待生成）
+    # conv.append_message(conv.roles[0], qs)  # 用户消息
+    # conv.append_message(conv.roles[1], None)  # 助手消息（待生成）
+    conv.append({"role": "user", "content": qs})
+    # conv.append({"role": "assistant", "content": ""})
 
     # 获取完整的提示词
-    prompt = conv.get_prompt()
+    # prompt = conv.get_prompt()
+    # print("!!!",conv)
+    prompt = tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer([prompt])
 
     # 转换为张量并移到GPU
     input_ids_ = torch.as_tensor(inputs.input_ids).cuda()  # 形状为 1, L
 
     # 创建停止条件
-    stopping_criteria = KeywordsStoppingCriteria([stop_str], tokenizer, input_ids_)
+    # stopping_criteria = KeywordsStoppingCriteria([stop_str], tokenizer, input_ids_)
 
     responses = []
 
@@ -222,7 +236,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         input_ids = input_ids_.repeat(batchsize, 1)  # 形状为 B, L
 
         # 生成输出
-        outputs = generate_outputs(model, tokenizer, input_ids, point_clouds, stopping_criteria)
+        outputs = generate_outputs(model, tokenizer, input_ids, point_clouds)
 
         # 保存结果
         for obj_id, output in zip(object_ids, outputs):
@@ -323,7 +337,7 @@ if __name__ == "__main__":
     
     # 模型相关参数
     parser.add_argument("--model_name", type=str, 
-        default="RunsenXu/PointLLM_7B_v1.2",
+        default="./outputs/PointLLM_train_stage3/PointLLM_train_stage3",
         help="预训练模型的名称或路径")
 
     # 数据集相关参数
@@ -352,9 +366,9 @@ if __name__ == "__main__":
     parser.add_argument("--start_eval", action="store_true", default=False,
         help="是否在生成后立即开始评估")
     parser.add_argument("--gpt_type", type=str, default="gpt-4-0613", 
-        choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview"],
+        choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4"],
         help="用于评估的GPT模型类型")
-    parser.add_argument("--task_type", type=str, default="captioning", 
+    parser.add_argument("--task_type", type=str, default="classification", 
         choices=["captioning", "classification"],
         help="评估任务类型")
 

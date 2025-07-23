@@ -7,7 +7,7 @@ from pointllm.utils import disable_torch_init
 from pointllm.model import *
 from pointllm.model.utils import KeywordsStoppingCriteria
 import numpy as np
-
+from peft import PeftModel
 from pointllm.data import pc_norm, farthest_point_sample
 
 import os
@@ -42,7 +42,21 @@ def init_model(args):
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = Point_R1ForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
+    if "PointLLM_train_stage1" not in model_name:
+        model = PeftModel.from_pretrained(model, model_name)
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
+    for name, param in model.named_parameters():
+        if "embed" in name or "lm_" in name:
+            print(f"Parameter {name} , id is {id(param)}")
+    
+    param = model.base_model.model.extra_lm_head
+    print(f"param: {param}, id is {id(param)}")
+    param = model.base_model.model.model.language_model.extra_embedding
+    print(f"param: {param}, id is {id(param)}")
+    param = model.base_model.model.model.language_model.embed_tokens.weight
+    print(f"param: {param}, id is {id(param)}")
+    param = model.base_model.model.lm_head.weight
+    print(f"param: {param}, id is {id(param)}")
 
     model.eval()
 
@@ -372,7 +386,7 @@ if __name__ == "__main__":
     # ! refer to https://www.gradio.app/guides/sharing-your-app#security-and-file-access
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, \
-         default="./outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1")
+         default="./outputs/PointLLM_train_stage3/PointLLM_train_stage3")
 
 
     parser.add_argument("--data_path", type=str, default="./data/objaverse_data", required=False)
@@ -382,7 +396,7 @@ if __name__ == "__main__":
     parser.add_argument("--tmp_dir", type=str, default="./working/tmp")
 
     # For gradio
-    parser.add_argument("--port", type=int, default=7810)
+    parser.add_argument("--port", type=int, default=7820)
 
     args = parser.parse_args()
     

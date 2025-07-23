@@ -190,17 +190,6 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         self.llm_train_type = "fix"
         self.post_init()
     
-    # def post_init(self):
-    #     pass
-        # super(Point_R1TextModel, self).post_init()
-        # # 对于nn.Linear层，避免梯度爆炸
-        # for module in self.modules():
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.xavier_uniform_(module.weight)
-        #         nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
-        #         if module.bias is not None:
-        #             nn.init.zeros_(module.bias)
-
     def load_point_backbone_checkpoint(self, checkpoint_path=None):
         # 加载点云骨干网络检查点的方法
         self.point_backbone.load_checkpoint(self.config.point_backbone_ckpt if checkpoint_path is None else checkpoint_path)
@@ -305,8 +294,8 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                     # 继续下一个样本
                 cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 513x2048 LxC
                 # # DEBUG
-                # cur_point_features = torch.cat((cur_point_features[0:1], cur_point_features[1::16]), dim=0)
-                # 获取当前点云特征并移动到正确的设备
+                # cur_point_features = torch.cat((cur_point_features[0:1], cur_point_features[1:1+64]), dim=0)
+
                 num_patches = cur_point_features.shape[0] # * number of point tokens 513(CLS + 512)
                 # 获取点token的数量
                 if point_backbone_config['mm_use_point_start_end']:
@@ -321,6 +310,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                         # 遍历每个点云开始token的位置
                         if cur_input_ids[point_start_token_pos + num_patches + 1] != point_backbone_config["point_end_token"]:
                             # 如果点云结束token不在预期位置
+                            print(point_backbone_config["point_start_token"],point_backbone_config["point_end_token"],cur_input_ids[point_start_token_pos + num_patches + 1])
                             raise ValueError("The point end token should follow the point start token.")
                             # 抛出值错误异常
                         cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0)
@@ -490,26 +480,11 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             # 如果标签存在
             # Shift so that tokens < n predict n
             # 移位使得tokens < n预测n
-            # print(f"=== DEBUG INFO START ===", file=sys.stderr, flush=True)
-            # print(f"logits.shape: {logits.shape}", file=sys.stderr, flush=True)
-            # print(f"labels.shape: {labels.shape}", file=sys.stderr, flush=True)
-            # print(f"logits.dtype: {logits.dtype}", file=sys.stderr, flush=True)
-            # print(f"labels.dtype: {labels.dtype}", file=sys.stderr, flush=True)
-            # print(f"self.config.vocab_size: {self.config.vocab_size}", file=sys.stderr, flush=True)
-            # print(f"=== DEBUG INFO END ===", file=sys.stderr, flush=True)
 
             shift_logits = logits[..., :-1, :].contiguous() # * B, L, V(32003)
             # 移位logits，形状为（批次，长度-1，词汇表大小）
             shift_labels = labels[..., 1:].contiguous() # * B, L
             # 移位标签，形状为（批次，长度-1）
-            
-            # print(f"=== AFTER SHIFT DEBUG ===", file=sys.stderr, flush=True)
-            # print(f"shift_logits.shape: {shift_logits.shape}", file=sys.stderr, flush=True)
-            # print(f"shift_labels.shape: {shift_labels.shape}", file=sys.stderr, flush=True)
-            # print(f"shift_logits.numel(): {shift_logits.numel()}", file=sys.stderr, flush=True)
-            # print(f"Expected reshape size: {shift_logits.numel() // self.config.vocab_size}", file=sys.stderr, flush=True)
-            # print(f"Remainder: {shift_logits.numel() % self.config.vocab_size}", file=sys.stderr, flush=True)
-            # print(f"=== END AFTER SHIFT DEBUG ===", file=sys.stderr, flush=True)
             
             actual_vocab_size = self.lm_head.weight.shape[0] + self.config.text_config.n_extra_tokens
             # 由于添加token，或者其他因素，config中的vocab_size可能不准确
@@ -534,11 +509,6 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             return (loss,) + output if loss is not None else output
             # 返回损失和输出，如果损失存在
 
-        # print("--------------------------------")
-        # print(logits.shape)
-        # print(logits)
-        # print(outputs)
-        # self.generate()
         ans= CausalLMOutputWithPast(
             # 返回因果语言模型输出
             loss=loss,
@@ -552,7 +522,6 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             attentions=outputs.attentions,
             # 注意力权重
         )
-        # print(ans)
         return ans
 
     def prepare_inputs_for_generation(
@@ -703,21 +672,12 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
                 point_cloud_start_embedding_avg = input_embeddings[point_cloud_start_tokens].mean(dim=0)
                 point_cloud_end_embedding_avg = input_embeddings[point_cloud_end_tokens].mean(dim=0)
                 point_cloud_patch_embedding_avg = input_embeddings[point_cloud_patch_tokens].mean(dim=0) 
-
-                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_start_token])[0]-origin_tokenizer_len] = point_cloud_start_embedding_avg.clone().detach()
-                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_end_token])[0]-origin_tokenizer_len] = point_cloud_end_embedding_avg.clone().detach()
-                extra_embedding[tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]-origin_tokenizer_len] = point_cloud_patch_embedding_avg.clone().detach()
+                with torch.no_grad():
+                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_start_token])[0]-origin_tokenizer_len] = point_cloud_start_embedding_avg.clone().detach()
+                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_end_token])[0]-origin_tokenizer_len] = point_cloud_end_embedding_avg.clone().detach()
+                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]-origin_tokenizer_len] = point_cloud_patch_embedding_avg.clone().detach()
 
                 self.extra_lm_head = self.get_model().language_model.extra_embedding
-                # print("#1",self.get_model().language_model.extra_embedding[0],flush=True,file=sys.stderr)
-                # print("#2",self.get_model().language_model.extra_embedding[1],flush=True,file=sys.stderr)
-                # print("#3",self.get_model().language_model.extra_embedding[2],flush=True,file=sys.stderr)
-                # print("#1",self.extra_lm_head[0],flush=True,file=sys.stderr)
-                # print("#2",self.extra_lm_head[1],flush=True,file=sys.stderr)
-                # print("#3",self.extra_lm_head[2],flush=True,file=sys.stderr)
-                # print("id(self.extra_lm_head)",id(self.extra_lm_head),flush=True,file=sys.stderr)
-                # print("id(self.get_model().language_model.extra_embedding)",id(self.get_model().language_model.extra_embedding),flush=True,file=sys.stderr)
-                
 
                 for p in self.get_input_embeddings().parameters():
                     # 遍历输入嵌入的参数

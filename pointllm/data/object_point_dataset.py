@@ -169,7 +169,6 @@ class ObjectPointCloudDataset(Dataset):  # 定义点云数据集类，继承自P
             sources = [sources]  # 将数据源包装成列表
         assert len(sources) == 1, "sources should be a list"  # 断言数据源列表长度为1
         if self.point_indicator in sources[0]['conversations'][0]['value']:  # 如果第一个对话中包含点云指示符
-
             object_id = self.list_data_dict[index]['object_id']  # 获取对象ID
 
             # Point cloud representation  # 点云表示
