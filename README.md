@@ -1,353 +1,246 @@
-<br>
-<p align="center">
-<h1 align="center"><img src="assets/icon.png" align="center" width="6.5%"><strong>PointLLM: Empowering Large Language Models to Understand Point Clouds</strong></h1>
-  <p align="center">
-    <a href='https://runsenxu.com/' target='_blank'>Runsen Xu</a>&emsp;
-    <a href='https://guanfang12.github.io/' target='_blank'>Xiaolong Wang</a>&emsp;
-    <a href='https://tai-wang.github.io/' target='_blank'>Tai Wang</a>&emsp;
-    <a href='http://yilunchen.com/about' target='_blank'>Yilun Chen</a>&emsp;
-    <a href='https://oceanpang.github.io/' target='_blank'>Jiangmiao Pang*</a>&emsp;
-    <a href='http://dahua.site/' target='_blank'>Dahua Lin</a>&emsp;
-    <br>
-    The Chinese University of Hong Kong&emsp;Shanghai AI Laboratory&emsp;Zhejiang University
-  </p>
-</p>
+# VLM-R1: A stable and generalizable R1-style Large Vision-Language Model
 
-<p align="center">
-  <a href="http://arxiv.org/abs/2308.16911" target='_**blank**'>
-    <img src="https://img.shields.io/badge/arXiv-2308.16911-blue?">
-  </a> 
-  <a href="https://arxiv.org/pdf/2308.16911.pdf" target='_blank'>
-    <img src="https://img.shields.io/badge/Paper-📖-blue?">
-  </a> 
-  <a href="https://runsenxu.com/projects/PointLLM" target='_blank'>
-    <img src="https://img.shields.io/badge/Project-&#x1F680-blue">
-  </a>
-  <a href="" target='_blank'>
-    <img src="https://img.shields.io/badge/Demo-&#x1f917-blue">
-  </a>
-  <a href="" target='_blank'>
-    <img src="https://visitor-badge.laobi.icu/badge?page_id=OpenRobotLab.pointllm&left_color=gray&right_color=blue">
-  </a>
-  <a href="https://openxlab.org.cn/apps/detail/openxlab-app/PointLLM" target='_blank'>
-    <img src="https://cdn-static.openxlab.org.cn/app-center/openxlab_app.svg">
-  </a>
-</p>
+<font size=4><div align='center' > [[🤗 REC Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression)] [[🤗 OVD Demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD)] [[🤗 REC Data](https://huggingface.co/datasets/omlab/VLM-R1)] [[🤗 Checkpoints](https://huggingface.co/collections/omlab/vlm-r1-models-67b7352db15c19d57157c348)] </div></font>
 
-## 🏠 About
-<!-- ![Teaser](assets/teaser.jpg) -->
-<div style="text-align: center;">
-    <img src="assets/teaser.jpg" alt="Dialogue_Teaser" width=100% >
+<font size=4><div align='center'>[[📄 Tech Report](https://arxiv.org/abs/2504.07615)] [[📝 Blog](https://om-ai-lab.github.io/index.html)]</div></font>
+
+<div align="center">
+<img src="./assets/performance4.png" width="900"/>
+<div>
+  <font size=4>
+    <p>🎉  <b>Our VLM-R1 Math model reaches the top of the Open-Compass Math Leaderboard (under 4B parameters) and OVD model achieves the state-of-the-art performance on OVDEval.</b></p>
+  </font>
 </div>
-We introduce <b>PointLLM, a multi-modal large language model capable of understanding colored point clouds of objects.</b> It perceives object types, geometric structures, and appearance without concerns for ambiguous depth, occlusion, or viewpoint dependency. <b>We collect a novel dataset comprising 660K simple and 70K complex point-text instruction pairs</b> to enable a two-stage training strategy. To rigorously evaluate our model's perceptual abilities and its generalization capabilities, <b>we establish two benchmarks: Generative 3D Object Classification and 3D Object Captioning, assessed through three different evaluation methods.</b>
+</div>
 
-## 🔥 News
-- [2025-04-21] We closed our online demo because we need to use the serving machine for other purposes.
-- [2024-09-06] We have uploaded the camera-ready version of PointLLM for ECCV 2024, which includes clearer writing and additional experimental results. Please check the paper [here](https://arxiv.org/abs/2308.16911).
-- [2024-07-01] PointLLM has been accepted by ECCV 2024 with all "strong-accept" recommendation. 🎉 We are looking for self-motivated students to conduct research regarding PointLLM. Please send an email to runsxu@gmail.com with your CV if you are interested!
-- [2023-12-29] We release the codes of our online Gradio demo.
-- [2023-12-26] We release the codes for model evaluation, including ChatGPT/GPT-4 evaluation and traditional metric evaluation.
-- [2023-12-08] We release the codes for training and PointLLM-v1.2. The online demo has also been upgraded to the v1.2 version. Please enjoy! &#x1F389; 
-- [2023-12-01] We have released an updated version of our paper (v2), which includes additional baseline comparisons, enhanced human-evaluation metrics, improved model performance (PointLLM-v1.2), and other refinements. Please check the updated version [here](https://arxiv.org/abs/2308.16911).
-- [2023-10-18] We release our instruction-following data, including both the simple-description and complex instructions. Download [here](https://huggingface.co/datasets/RunsenXu/PointLLM).
-- [2023-09-26] We release the inferencing codes with checkpoints as well as the Objaverse colored point cloud files we use. You can chat with PointLLM with your own machines.
-- [2023-08-31] We release the [paper](http://arxiv.org/abs/2308.16911) of PointLLM and an online gradio demo. Try it! &#x1F389;
+Since the introduction of [Deepseek-R1](https://github.com/deepseek-ai/DeepSeek-R1), numerous works have emerged focusing on reproducing and improving upon it. In this project, we propose VLM-R1, a stable and generalizable R1-style Large Vision-Language Model.
 
-<!-- contents with emoji -->
-## 📋 Contents
-- [🤖 Online Demo](#-online-demo)
-- [💬 Dialogue Examples](#-dialogue-examples)
-- [🔍 Overview](#-overview)
-- [📦 Training and Evaluation](#-training-and-evaluation)
-- [📝 TODO List](#-todo-list)
-- [🔗 Citation](#-citation)
-- [📄 License](#-license)
-- [📚 Related Work](#-related-work)
-- [👏 Acknowledgements](#-acknowledgements)
+Specifically, for the task of Referring Expression Comprehension (REC), we trained [Qwen2.5-VL](https://github.com/QwenLM/Qwen2.5-VL) using both R1 and SFT approaches. The results reveal that, on the in-domain test data, the performance of the SFT model shows little change compared to that of the R1 model base model when the number of training steps is relatively small (100–600 steps), while the R1 model shows a steady improvement (as shown at the left of the figure below). More importantly, on the out-of-domain test data, the SFT model's performance deteriorates slightly as the number of steps increases. Nevertheless, the RL model generalizes its reasoning ability to the out-of-domain data (as shown at the right of the figure below).
 
+![image](./assets/performance3.png)
+\* *We found previous REC SFT exps used a mismatch pixel config. Therefore, we re-run the study with the correct config on a more complex out-of-domain data. See our [findings](https://om-ai-lab.github.io/2025_03_24.html) for details.*
 
-## 💬 Dialogue Examples
-| Dialogue 1 | Dialogue 2| Dialogue 3 | Dialogue 4
-| :-: | :-: | :-: | :-: |
-| <img width="100%" src="assets/dialogue_1.jpg"> |  <img width="100%" src="assets/dialogue_2.jpg"> |  <img width="100%" src="assets/dialogue_3.jpg"> | <img width="100%" src="assets/dialogue_4.jpg"> |
+## 🚀 Features
 
+This repository supports:
 
-## 🔍 Overview
+- **`Full Fine-tuning for GRPO`**: see [run_grpo_rec.sh](run_scripts/run_grpo_rec.sh)
+- **`Freeze Vision Modules`**: set `freeze_vision_modules` as `true` in the script.
+- **`LoRA Fine-tuning for GRPO`**: see [run_grpo_rec_lora.sh](run_scripts/run_grpo_rec_lora.sh)
+- **`Multi-node Training`**: see [multinode_training_demo.sh](run_scripts/multinode_training_demo.sh)
+- **`Multi-image Input Training`**: see [run_grpo_gui.sh](run_scripts/run_grpo_gui.sh)
+- **`For your own data`**: see [here](#for-your-own-data)
+- **`Various VLMs`**: see [How to add a new model](assets/add_new_model.md), now we support QwenVL and InternVL
 
-### Model
-<p align="center">
-  <img src="assets/model.jpg" align="center" width="100%">
-</p>
-The point encoder extracts features from the input point cloud and projects them to the latent space of the LLM backbone. The LLM backbone processes sequences of point tokens and text tokens, and generates the predicted tokens as the output.
+## 🗞️ Update
 
-### Experiment Results
-#### Quantitative Comparisons with baselines.
-Please refer to our paper for more results.
-<p align="center">
-  <img src="assets/cls_results.png" align="center" width="100%">
-</p>
-<p align="center">
-  <img src="assets/caption_results.png" align="center" width="100%">
-</p>
-<b>!!!Note: Traditional metrics such as BLEU-1, ROUGE-L, and METEOR tend to favor shorter responses and may not effectively capture semantic accuracy. For a detailed discussion on this, please refer to our paper. We suggest the community not solely rely on these metrics for evaluation.</b>
+- **`2025-06-26`**: We introduce a post-resize operation for the bounding box for QwenVL (both [training](src/open-r1-multimodal/src/open_r1/vlm_modules/qwen_module.py#L124-L129) and [evaluation](src/eval/test_rec_r1.py#L92-L97)) and the results are improved slightly.
+- **`2025-04-16`**: We have updated the codebase to improve functionality and maintain unified implementation. Specifically, the REC process is now integrated into [grpo_jsonl.py](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py) for consistency across tasks. Additionally, we introduce a new parameter, `is_reward_customized_from_vlm_module`, which enables the use of customized reward functions defined within the VLM module. When set to `true`, the reward logic is handled in either [QwenVL2Module](src/open-r1-multimodal/src/open_r1/vlm_modules/qwen_module.py) or [InternVLModule](src/open-r1-multimodal/src/open_r1/vlm_modules/internvl_module.py), depending on the selected model. Furthermore, the training log has been enhanced to provide more detailed output for easier monitoring and debugging.
+- **`2025-04-11`**: 🔥🔥🔥 We release the [technical report](https://arxiv.org/abs/2504.07615) of VLM-R1, summarizing our main results and insights.
+- **`2025-04-03`**: We add the `odLength`, `weighted_sum`, and `cosine` reward used in OVD task, please refer our [blog post](https://om-ai-lab.github.io/2025_03_20.html) and [findings](https://om-ai-lab.github.io/2025_03_24.html) to the details of the reward usage and see [grpo_jsonl.py](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py) for code implementation.
+- **`2025-03-24`**: 🔥 We release the [findings](https://om-ai-lab.github.io/2025_03_24.html) of VLM-R1-OVD.
+- **`2025-03-23`**: 🔥 We release the VLM-R1-OVD [model weights](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321) and [demo](https://huggingface.co/spaces/omlab/VLM-R1-OVD), which shows the state-of-the-art performance on OVDEval. Welcome to use it.
+- **`2025-03-20`**: 🔥 We achieved SOTA results on [OVDEval](https://github.com/om-ai-lab/OVDEval) with our RL-based model, outperforming SFT baselines and specialized object detection models. Read our [blog post](https://om-ai-lab.github.io/2025_03_20.html) for details on how reinforcement learning enhances object detection performance.
+- **`2025-03-17`**: Our VLM-R1 Math model reaches the top of the [Open-Compass Math Leaderboard](https://rank.opencompass.org.cn/leaderboard-multimodal-reasoning/?m=REALTIME) (under 4B parameters). We have released the [checkpoint](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305).
+- **`2025-03-15`**: We support multi-image input data. Check the format of multi-image input [here](#for-your-own-data). We also provide an example of multi-image script [run_grpo_gui.sh](run_scripts/run_grpo_gui.sh), see [here](#for-your-own-data) for details.
+- **`2025-03-13`**: We support InternVL for GRPO. See [run_grpo_rec_internvl.sh](run_scripts/run_grpo_rec_internvl.sh) for details. The annotation json files used in InternVL are [here](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_internvl.zip). If you want to add your new model, please refer to [How to add a new model](assets/add_new_model.md).
+- **`2025-03-02`**: We support LoRA Fine-tuning for GRPO. See [run_grpo_rec_lora.sh](run_scripts/run_grpo_rec_lora.sh) for details.
+- **`2025-02-27`**: We support the `number of iterations per batch` and `epsilon value for clipping` in the original GRPO algorithm with args: `--num_iterations` and `--epsilon`.
+- **`2025-02-25`**: We support multi-node training for GRPO. See [multinode_training_demo.sh](run_scripts/multinode_training_demo.sh) for details.
+- **`2025-02-21`**: We release the [checkpoint](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps) of the VLM-R1 REC model.
+- **`2025-02-20`**: We release the script for [general data loading](#for-your-own-data).
+- **`2025-02-19`**: We incorporate an explanation of the [SFT](#sft) method.
+- **`2025-02-17`**: We release the VLM-R1 REC [Demo](https://huggingface.co/spaces/omlab/VLM-R1-Referral-Expression) on Hugging Face Spaces.
+- **`2025-02-15`**: We release the VLM-R1 repository and [GRPO](#grpo) training script.
 
-#### Qualitative Comparisons with baselines.
-Please refer to our paper for more results.
-<p align="center">
-  <img src="assets/qualitative_comparisons_v2.png" align="center" width="100%">
-</p>
+## 🤖 Models
 
-## 📦 Training and Evaluation
-### Installation
-We test our codes under the following environment:
-- Ubuntu 20.04
-- NVIDIA Driver: 515.65.01
-- CUDA 11.7
-- Python 3.10.13
-- PyTorch 2.0.1
-- Transformers 4.28.0.dev(transformers.git@cae78c46)
+- **[`OVD`](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321)**: Trained with VLM-R1, our Open-Vocabulary Detection (OVD) model achieves the state-of-the-art performance on OVDEval.
+- **[`Math`](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305)**: Through VLM-R1 training, our math model focuses on multimodal reasoning tasks and has achieved Top1 on the OpenCompass Multi-modal Reasoning Leaderboard among models < 4B.
+- **[`REC`](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps)**: Trained with VLM-R1, our Referring Expression Comprehension (REC) model showcases the superior performance on out-of-domain data and a series of reasoning-grounding tasks.
+- **[`GUI`](https://huggingface.co/konkazzz/GT-r1)**: Trained with VLM-R1, our GUI Defect Detection model outperforms both base and SFT models by achieving the best accuracy and improved generalization across both defective and clean screens.
 
-To start: 
-1. Clone this repository.
+| Version                          | Base VLM     | Checkpoint                                                                                           | Task Type                 |
+| -------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------- | ------------------------- |
+| VLM-R1-Qwen2.5VL-3B-OVD-0321     | Qwen2.5VL-3B | [omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-OVD-0321)         | Open-Vocabulary Detection |
+| VLM-R1-Qwen2.5VL-3B-Math-0305    | Qwen2.5VL-3B | [omlab/VLM-R1-Qwen2.5VL-3B-Math-0305](https://huggingface.co/omlab/VLM-R1-Qwen2.5VL-3B-Math-0305)       | Multi-Modal Math          |
+| VLM-R1-Qwen2.5VL-3B-REC-500steps | Qwen2.5VL-3B | [omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps](https://huggingface.co/omlab/Qwen2.5VL-3B-VLM-R1-REC-500steps) | REC/Reasoning-Grounding   |
+
+## 🎯 ToDo
+
+- [X] Implement multi-node training.
+- [X] Implement LoRA Fine-tuning.
+- [X] Support more Multimodal LLMs.
+- [X] Support multi-image input.
+- [X] Release the VLM-R1 Math model.
+- [X] Release the blog of VLM-R1.
+- [X] Release the VLM-R1-OVD model.
+- [X] Release the technical report of VLM-R1.
+- [ ] Study cross task generalization.
+- [ ] Enhance VLM for other tasks [welcome issue].
+
+## 🛠️ Setup
+
 ```bash
-git clone git@github.com:OpenRobotLab/PointLLM.git
-cd PointLLM
-```
-2. Install packages
-```bash
-conda create -n pointllm python=3.10 -y
-conda activate pointllm
-apt-get install libaio-dev
-pip install --upgrade pip  # enable PEP 660 support
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu118
-pip install "flash-attn==2.7.3" # cuda 11.8+torch2.6
-pip install "torch==2.6.0" vllm
-pip install -e .
-
-# * for training
-pip install ninja
-
+conda create -n vlm-r1 python=3.10
+conda activate vlm-r1
+bash setup.sh
 ```
 
-### Data Preparation
-#### Objaverse Training Data
-1. Download the two compressed files of 660K Objaverse colored point clouds [here](https://huggingface.co/datasets/RunsenXu/PointLLM/tree/main). They require about 77GB of storage space.
-2. Run the following command to merge the two files into one and uncompress it. This will produce a folder named `8192_npy` containing 660K point cloud files named `{Objaverse_ID}_8192.npy`. Each file is a numpy array with dimensions (8192, 6), where the first three dimensions are `xyz` and the last three dimensions are `rgb` in [0, 1] range.
-```bash
-cat Objaverse_660K_8192_npy_split_a* > Objaverse_660K_8192_npy.tar.gz
-tar -xvf Objaverse_660K_8192_npy.tar.gz
-```
-3. In `PointLLM` folder, create a folder `data` and create a soft link to the uncompressed file in the directory.
-```bash
-cd PointLLM
-mkdir data
-ln -s /path/to/8192_npy data/objaverse_data
-```
+## 💪🏻 Training
 
-#### Instruction-Following Data
-1. In `PointLLM/data` folder, create a directory named `anno_data`.
-2. Our instruction-following data, including both the simple-description and complex instructions, can be downloaded [here](https://huggingface.co/datasets/RunsenXu/PointLLM). If you have difficulty downloading the data (e.g. network issue), please email the authors.
-- The simple-description data has 660K samples and the complex instructions have 70K samples.
-- Both training data are based on the Objaverse dataset.
-- The complex instructions are generated with GPT-4.
-3. Put the data files in the `anno_data` directory. The directory should look like this:
-```bash
-PointLLM/data/anno_data
-├── PointLLM_brief_description_660K_filtered.json
-├── PointLLM_brief_description_660K.json
-└── PointLLM_complex_instruction_70K.json
-```
-4. Note, the `PointLLM_brief_description_660K_filtered.json` is filtered from `PointLLM_brief_description_660K.json` by removing the 3000 objects we reserved as the validation set. If you want to reproduce the results in our paper, you should use the `PointLLM_brief_description_660K_filtered.json` for training. The `PointLLM_complex_instruction_70K.json` contains objects from the training set.
-5. If you want to generate the complex instructions by yourself, please refer to our paper for other details. The system prompt is at `pointllm/data/data_generation/system_prompt_gpt4_0613.txt`.
+### Referring Expression Comprehension (REC)
 
-#### Evaluation Data
-1. Download the referencing GT `PointLLM_brief_description_val_200_GT.json` we use for the benchmarks on Objaverse dataset [here](https://huggingface.co/datasets/RunsenXu/PointLLM/blob/main/PointLLM_brief_description_val_200_GT.json), and put it in `PointLLM/data/anno_data`. We also provide the 3000 object ids we filter during training [here](https://huggingface.co/datasets/RunsenXu/PointLLM/blob/main/val_object_ids_3000.txt) and their corresponding referencing GT [here](https://huggingface.co/datasets/RunsenXu/PointLLM/blob/main/PointLLM_brief_description_val_3000_GT.json), which can be used to evaluate on all the 3000 objects.
-2. Create a directory named `modelnet40_data` in `PointLLM/data`. Download the test split of ModelNet40 point clouds `modelnet40_test_8192pts_fps.dat` [here](https://huggingface.co/datasets/RunsenXu/PointLLM/blob/main/modelnet40_test_8192pts_fps.dat) and put it in `PointLLM/data/modelnet40_data`.
+#### 📚 GRPO
 
-### Training
-#### Download the Initial LLM and Point Encoder Weights
-1. In `PointLLM` folder, create a directory named `checkpoints`.
-2. Download the pre-trained LLM and point encoder: [
-PointLLM_7B_v1.1_init](https://huggingface.co/RunsenXu/PointLLM_7B_v1.1_init/tree/main) or [PointLLM_13B_v1.1_init](https://huggingface.co/RunsenXu/PointLLM_13B_v1.1_init/tree/main). Put them in the `checkpoints` directory.
-3. Note that the above "v1.1" means we use the Vicuna-v1.1 checkpoints, and you do **not** need to download the original LLaMA weights again. 
+1. Download the [COCO Train2014 image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/train2014.zip) and unzip it, and we refer to the image dir as `<your_image_root>`.
+2. Download the [RefCOCO/+/g and LISA-Grounding Annotation files](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/rec_jsons_processed.zip) and unzip it (LISA-Grounding is used for out-of-domain evaluation).
+3. Change the `data_paths` and `image_folders` in the [run_scripts/run_grpo_rec.sh](run_scripts/run_grpo_rec.sh) file.
 
-#### Start Training
-1. For stage-1 training, simply run:
 ```bash
-cd PointLLM
-scripts/PointLLM_train_stage1.sh
-```
-2. After stage-1 training, start stage-2 training:
-```bash
-scripts/PointLLM_train_stage2.sh
+# These jsonl files are included in the annotation files at step 2.
+# Note: please use jsonl files instead of json files.
+data_paths="path/to/refcoco_train.jsonl:path/to/refcocop_train.jsonl:path/to/refcocog_train.jsonl"
+image_folders="path/to/coco:path/to/coco:path/to/coco"
 ```
 
-#### PointLLM-v1.1 and PointLLM-v1.2
-Usually, you do not have to care about the following contents. They are only for reproducing the results in our v1 paper (PointLLM-v1.1). If you want to compare with our models or use our models for downstream tasks, please use PointLLM-v1.2 (refer to our v2 paper), which has better performance.
-<details>
-  <summary>The following steps are for reproducing PointLLM-v1.1 (click to expand)</summary>
-  
-1. PointLLM v1.1 and v1.2 use slightly different pre-trained point encoders and projectors. If you want to reproduce PointLLM v1.1, edit the `config.json` file in the directory of initial LLM and point encoder weights, for example, `vim checkpoints/PointLLM_7B_v1.1_init/config.json`.
-  
-2. Change the key `"point_backbone_config_name"` to specify another point encoder config:
-    ```bash
-    # change from
-    "point_backbone_config_name": "PointTransformer_8192point_2layer" # v1.2
-    # to
-    "point_backbone_config_name": "PointTransformer_base_8192point", # v1.1
-    ```
+4. ``bash run_scripts/run_grpo_rec.sh``
 
-3. Edit the checkpoint path of the point encoder in `scripts/train_stage1.sh`:
-    ```bash
-    # change from
-    point_backbone_ckpt=$model_name_or_path/point_bert_v1.2.pt # v1.2
-    # to
-    point_backbone_ckpt=$model_name_or_path/point_bert_v1.1.pt # v1.1
-    ```
-</details>
+> [!NOTE]
+> If you encounter 'CUDA out of memory' error, you can try to reduce the `per_device_train_batch_size`.
 
-### Chatting
-1. The trained model checkpoints are available [here](https://huggingface.co/RunsenXu) (including different versions of PointLLM). 
-2. Run the following command to launch a chatbot using the `torch.float32` data type for chatting about 3D models of Objaverse. The model checkpoints will be downloaded automatically. You can also manually download the model checkpoints and specify their paths. Here is an example:
+<div align="center">
+<img src="./assets/iou.jpg" width="750"/>
+</div>
+<!-- ![image](./assets/wandb.jpg) -->
+
+#### 📚 Multi-Node GRPO
+
+For multi-node training, please refers to [multinode_training_demo.sh](src/open-r1-multimodal/multinode_training_demo.sh).
+
+#### 📚 SFT
+
+We use [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) to train the SFT model.
+
+1. Clone the [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory) repository and install the dependencies.
+
 ```bash
-cd PointLLM
-PYTHONPATH=$PWD python pointllm/eval/PointLLM_chat.py --model_name RunsenXu/PointLLM_7B_v1.2 --data_name data/objaverse_data --torch_dtype float32
+git clone https://github.com/hiyouga/LLaMA-Factory.git
+cd LLaMA-Factory
+pip install -e ".[torch,metrics]"
 ```
-3. You can also easily modify the codes for using point clouds other than those from Objaverse, as long as the point clouds input to the model have dimensions (N, 6), where the first three dimensions are `xyz` and the last three dimensions are `rgb` (in [0, 1] range). You may sample the point clouds to have 8192 points, as our model is trained on such point clouds.
-4. The following table shows GPU requirements for different models and data types. We recommend using `torch.bfloat16` if applicable, which is used in the experiments in our paper.
-   
-    |  Model   | Data Type | GPU Memory |
-    |:--------:|:---------:|:----------:|
-    | PointLLM-7B  | torch.float16 |    14GB    |
-    | PointLLM-7B  | torch.float32 |    28GB    |
-    | PointLLM-13B | torch.float16 |    26GB    |
-    | PointLLM-13B | torch.float32 |    52GB    |
 
-### Gradio Demo
-1. We provide the codes for our online Gradio demo. You can run the following commands to launch the demo locally for chatting and visualization.
+2. Download the dataset_info.json, mllm_rec_json.json, and qwen2_5_vl_full_sft.yaml we provided [here](https://huggingface.co/datasets/omlab/VLM-R1/tree/main/sft_related). Put the json files in the `LLaMA-Factory/data` directory and the yaml file in the `LLaMA-Factory/examples/train_full` directory.
+3. Run the following command to train the SFT model.
+
 ```bash
-cd PointLLM
-PYTHONPATH=$PWD python pointllm/eval/chat_gradio.py --model_name RunsenXu/PointLLM_7B_v1.2 --data_name data/objaverse_data
+llamafactory-cli train examples/train_full/qwen2_5_vl_full_sft.yaml
 ```
-2. Kind remind: if you want to release the demo in public, please refer to https://www.gradio.app/guides/sharing-your-app#security-and-file-access.
 
-### Evaluation
-#### Inferencing
-1. Run the following commands to infer the results.
-2. Different commands for inferencing on different benchmarks (PointLLM_7B_v1.2 as an example):
-```bash
-cd PointLLM
-export PYTHONPATH=$PWD
+### For your own data
 
-# Open Vocabulary Classification on Objaverse
-python pointllm/eval/eval_objaverse.py --model_name RunsenXu/PointLLM_7B_v1.2 --task_type classification --prompt_index 0 # or --prompt_index 1
+<div style="text-align: justify;">
 
-# Object captioning on Objaverse
-python pointllm/eval/eval_objaverse.py --model_name RunsenXu/PointLLM_7B_v1.2 --task_type captioning --prompt_index 2
+We support data loading the jsonl data of this format in [`src/open-r1-multimodal/src/open_r1/grpo_jsonl.py`](src/open-r1-multimodal/src/open_r1/grpo_jsonl.py). Please note that you may need to use different reward functions for your specialized tasks. Welcome to PR to add your own reward functions or share any other interesting findings!
 
-# Close-set Zero-shot Classification on ModelNet40
-python pointllm/eval/eval_modelnet_cls.py --model_name RunsenXu/PointLLM_7B_v1.2 --prompt_index 0 # or --prompt_index 1
-```
-3. Please check the default command-line arguments of these two scripts. You can specify different prompts, data paths, and other parameters. 
-4. After inferencing, the results will be saved in `{model_name}/evaluation` as a dict with the following format:
-```bash
+</div>
+
+The jsonl has the format as follows:
+
+```json
 {
-  "prompt": "",
-  "results": [
-    {
-      "object_id": "",
-      "ground_truth": "", 
-      "model_output": "",
-      "label_name": "" # only for classification on modelnet40
-    }
+  "id": 1,
+  "image": "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png",
+  "conversations": [
+    {"from": "human", "value": "<image>What number of purple metallic balls are there?"},
+    {"from": "gpt", "value": "0"}
   ]
 }
 ```
 
-#### ChatGPT/GPT-4 Evaluation
-1. Get your OpenAI API key at [https://platform.openai.com/api-keys](https://platform.openai.com/api-keys).
-2. Run the following commands to evaluate the model outputs in parallel with ChatGPT/GPT-4 (which cost approximately $1.5 to $2.2 USD).
-```bash
-cd PointLLM
-export PYTHONPATH=$PWD
-export OPENAI_API_KEY=sk-****
+If you want to use multi-image input, you can use the following format:
 
-# Open Vocabulary Classification on Objaverse
-python pointllm/eval/evaluator.py --results_path /path/to/model_output --model_type gpt-4-0613 --eval_type open-free-form-classification --parallel --num_workers 15
-
-# Object captioning on Objaverse
-python pointllm/eval/evaluator.py --results_path /path/to/model_output --model_type gpt-4-0613 --eval_type object-captioning --parallel --num_workers 15
-
-# Close-set Zero-shot Classification on ModelNet40
-python pointllm/eval/evaluator.py --results_path /path/to/model_output --model_type gpt-3.5-turbo-0613 --eval_type modelnet-close-set-classification --parallel --num_workers 15
-```
-3. The evaluation script supports interruption and resumption. You can interrupt the evaluation process at any time by using `Ctrl+C`. This will save the temporary results. If an error occurs during the evaluation, the script will also save the current state. You can resume the evaluation from where it left off by running the same command again.
-4. The evaluation results will be saved in `{model_name}/evaluation` as another dict.
-Some of the metrics are explained as follows:
-```bash
-"average_score": The GPT-evaluated captioning score we report in our paper.
-"accuracy": The classification accuracy we report in our paper, including random choices made by ChatGPT when model outputs are vague or ambiguous and ChatGPT outputs "INVALID".
-"clean_accuracy": The classification accuracy after removing those "INVALID" outputs.
-"total_predictions": The number of predictions.
-"correct_predictions": The number of correct predictions.
-"invalid_responses": The number of "INVALID" outputs by ChatGPT.
-
-# Some other statistics for calling OpenAI API
-"prompt_tokens": The total number of tokens of the prompts for ChatGPT/GPT-4.
-"completion_tokens": The total number of tokens of the completion results from ChatGPT/GPT-4.
-"GPT_cost": The API cost of the whole evaluation process, in US Dollars 💵.
-```
-5. <b>Open-Step Evaluation.</b> You can also start evaluation immediately after inferencing by passing the `--start_eval` flag and specifying the `--gpt_type`. For example:
-```bash
-python pointllm/eval/eval_objaverse.py --model_name RunsenXu/PointLLM_7B_v1.2 --task_type classification --prompt_index 0 --start_eval --gpt_type gpt-4-0613
-```
-
-#### Traditional Metric Evaluation
-1. For the object captioning task, run the following command to evaluate model outputs with traditional metrics including BLEU, ROUGE, METEOR, Sentence-BERT, and SimCSE.
-```bash
-python pointllm/eval/traditional_evaluator.py --results_path /path/to/model_captioning_output
-```
-2. Note that we recommend not using BLEU, ROUGE, and METEOR for evaluation as they favor short captions and fall short of capturing semantic accuracy and diversity.
-
-## 📝 TODO List
-- [x] Add inferencing codes with checkpoints.
-- [x] Release instruction-following data.
-- [x] Add training codes.
-- [x] Add evaluation codes.
-- [x] Add gradio demo codes.
-- [ ] Release PointLLM-V2 with a better model and data.
-
-Community contributions are welcome!👇 If you need any support, please feel free to open an issue or contact us.
-- [ ] Support Phi-2 LLM to make PointLLM more accessible to the community.
-- [ ] Support Chinese LLMs like InternLM.
-
-## 🔗 Citation
-
-If you find our work and this codebase helpful, please consider starring this repo 🌟 and cite:
-
-```bibtex
-@inproceedings{xu2024pointllm,
-  title={PointLLM: Empowering Large Language Models to Understand Point Clouds},
-  author={Xu, Runsen and Wang, Xiaolong and Wang, Tai and Chen, Yilun and Pang, Jiangmiao and Lin, Dahua},
-  booktitle={ECCV},
-  year={2024}
+```json
+{
+  "id": 1,
+  "image": ["Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16885.png", "Clevr_CoGenT_TrainA_R1/data/images/CLEVR_trainA_000001_16886.png"],
+  "conversations": [
+    {"from": "human", "value": "<image><image>What number of purple metallic balls in total within the two images?"},
+    {"from": "gpt", "value": "3"}
+  ]
 }
 ```
 
-## 📄 License
-<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/80x15.png" /></a>
-<br />
-This work is under the <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.
+> [!NOTE]
+> The image path in the jsonl file should be relative to the image folder specified in `--image_folders`. The absolute path of the input image is constructed as `os.path.join(image_folder, data['image'])`. For example:
 
-## 📚 Related Work
-Together, Let's make LLM for 3D great!
-- [Point-Bind & Point-LLM](https://arxiv.org/abs/2309.00615): aligns point clouds with Image-Bind, and leverages ImageBind-LLM to reason multi-modality input without 3D-instruction data training.
-- [3D-LLM](https://arxiv.org/abs/2307.12981): employs 2D foundation models to encode multi-view images of 3D point clouds.
+- If your jsonl has `"image": "folder1/image1.jpg"`
+- And you specify `--image_folders "/path/to/images/"`
+- The full image path will be `/path/to/images/folder1/image1.jpg`
 
+Multiple data files and image folders can be specified using ":" as a separator:
 
-## 👏 Acknowledgements
-- [LLaVA](https://github.com/haotian-liu/LLaVA): Our codebase is built upon LLaVA.
-- [Vicuna](https://github.com/lm-sys/FastChat): We use the Vicuna-7B and Vicuna-13B checkpoints.
-- [Objaverse](https://objaverse.allenai.org): We use models of the Objaverse dataset for training and evaluation.
-- [Cap3D](https://github.com/crockwell/Cap3D/): We use the Cap3D captioning data for our data generation.
-- [ULIP-2](https://github.com/salesforce/ULIP): We use ULIP-2 for pre-training our point cloud encoder.
+```bash
+--data_file_paths /path/to/data1.jsonl:/path/to/data2.jsonl \
+--image_folders /path/to/images1/:/path/to/images2/
+```
+
+The script can be run like this:
+
+```bash
+# You could refer to the run_grpo_rec.sh for the example
+torchrun --nproc_per_node="8" \
+    --nnodes="1" \
+    --node_rank="0" \
+    --master_addr="127.0.0.1" \
+    --master_port="12345" \
+  src/open_r1/grpo_jsonl.py \
+    --output_dir output/$RUN_NAME \
+    --model_name_or_path Qwen/Qwen2.5-VL-3B-Instruct \
+    --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero3.json \
+    --data_file_paths /path/to/your/data.jsonl \ # can be multiple, separated by ":"
+    --image_folders /path/to/your/image/folder \ # can be multiple, separated by ":"
+    ...
+```
+
+<div style="text-align: justify;">
+
+### Multi-image Input
+We provide an example of multi-image script [run_grpo_gui.sh](src/open-r1-multimodal/run_scripts/run_grpo_gui.sh). This task requires the model to analyze two GUI screenshots, taken before and after a user action, to determine if any UI interaction defects are present, which is from [GUI-Testing-Arena](https://huggingface.co/datasets/songjah/GTArena-UI-Defects). Download the [image](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/gui_multi-image.zip) and unzip it into the `/path/to/images/`. Then modify the `image_folders` parameter in the script and run it.
+
+```bash
+bash run_scripts/run_grpo_gui.sh
+```
+
+</div>
+
+## 📊 Evaluation
+
+![image](./assets/data2.png)
+
+1. Download the provided [LISA-Grounding images](https://huggingface.co/datasets/omlab/VLM-R1/resolve/main/lisa-test.zip).
+
+```bash
+cd ./src/eval
+
+# Remember to change the model path, image root, and annotation path in the script
+torchrun --nproc_per_node=X test_rec_r1.py # for GRPO. 'X' is the number of GPUs you have.
+torchrun --nproc_per_node=X test_rec_baseline.py # for SFT.
+```
+
+## 🤝 Acknowledgements
+
+We would like to express our sincere gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1), [Open-R1](https://github.com/huggingface/open-r1), [QwenVL](https://github.com/QwenLM/Qwen2.5-VL), [Open-R1-Multimodal](https://github.com/EvolvingLMMs-Lab/open-r1-multimodal), [R1-V](https://github.com/Deep-Agent/R1-V), [RefCOCO](https://github.com/lichengunc/refer), [RefGTA](https://github.com/mikittt/easy-to-understand-REG/tree/master/pyutils/refer2), [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory), [OVDEval](https://github.com/om-ai-lab/OVDEval), [GUI-Testing-Arena](https://huggingface.co/datasets/songjah/GTArena-UI-Defects), and [LISA](https://github.com/dvlab-research/LISA) for providing open-source resources that contributed to the development of this project.
+
+## ⭐️ Citation
+
+If you find this project useful, welcome to cite us.
+
+```bib
+@article{shen2025vlm,
+  title={Vlm-r1: A stable and generalizable r1-style large vision-language model},
+  author={Shen, Haozhan and Liu, Peng and Li, Jingcheng and Fang, Chunxin and Ma, Yibo and Liao, Jiajia and Shen, Qiaoli and Zhang, Zilun and Zhao, Kangjia and Zhang, Qianqian and Xu, Ruochen and Zhao, Tiancheng },
+  journal={arXiv preprint arXiv:2504.07615},
+  year={2025}
+}
+```
