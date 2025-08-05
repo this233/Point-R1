@@ -195,15 +195,16 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
     default_point_start_token = point_backbone_config['default_point_start_token']
     default_point_end_token = point_backbone_config['default_point_end_token']
     mm_use_point_start_end = point_backbone_config['mm_use_point_start_end']
-
+    print(default_point_patch_token,default_point_start_token,default_point_end_token,mm_use_point_start_end)
     # 根据配置构建包含点云token的问题
     if mm_use_point_start_end:
         # 使用开始和结束token包围点云patch token
-        qs = default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + '\n' + qs
+        point_token_len =30
+        qs ="<|vision_start|>" + default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + "<|vision_end|>" + '\n' + qs
     else:
         # 只使用点云patch token
         qs = default_point_patch_token * point_token_len + '\n' + qs
-    
+    print(qs)
     # 构建对话
     # conv.append_message(conv.roles[0], qs)  # 用户消息
     # conv.append_message(conv.roles[1], None)  # 助手消息（待生成）
@@ -231,6 +232,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         object_ids = batch["object_ids"]  # 对象ID列表
 
         batchsize = len(object_ids)
+        print("!!!$$",batchsize)
 
         # 复制input_ids以匹配批次大小
         input_ids = input_ids_.repeat(batchsize, 1)  # 形状为 B, L
