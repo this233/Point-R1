@@ -2,9 +2,9 @@ PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 export REPO_HOME="${PROJECT_ROOT}"
 echo "REPO_HOME: $REPO_HOME"
 # on remote
-data_paths="/root/lanyun-tmp/code/VLM-R1/rec_jsons_processed/refcoco_train.jsonl:/root/lanyun-tmp/code/VLM-R1/rec_jsons_processed/refcocop_train.jsonl:/root/lanyun-tmp/code/VLM-R1/rec_jsons_processed/refcocog_train.jsonl"
-image_folders="/root/lanyun-tmp/code/VLM-R1:/root/lanyun-tmp/code/VLM-R1:/root/lanyun-tmp/code/VLM-R1"
-model_path="/root/lanyun-tmp/code/Qwen2.5-VL-3B-Instruct"
+data_paths="/data/liweihong/code/Point-R1/image_data/rec_jsons_processed/refcoco_train.jsonl:/data/liweihong/code/Point-R1/image_data/rec_jsons_processed/refcocop_train.jsonl:/data/liweihong/code/Point-R1/image_data/rec_jsons_processed/refcocog_train.jsonl"
+image_folders="/data/liweihong/code/Point-R1/image_data:/data/liweihong/code/Point-R1/image_data:/data/liweihong/code/Point-R1/image_data"
+model_path="/data/liweihong/code/Point-R1/models/Qwen2.5-VL-3B-Instruct"
 
 is_reward_customized_from_vlm_module=True
 echo "data_paths: $data_paths"
@@ -23,7 +23,7 @@ export LOG_PATH="${REPO_HOME}/runs/${EXP_NAME}/log/debug_log.$(date +%Y-%m-%d-%H
 
 # export WANDB_DISABLED=true
 # CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
-torchrun --nproc_per_node="8" \
+torchrun --nproc_per_node="4" \
     --nnodes="1" \
     --node_rank="0" \
     --master_addr="127.0.0.1" \
