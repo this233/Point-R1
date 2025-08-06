@@ -44,7 +44,7 @@ def init_model(args):
     # 加载分词器
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
-    # 加载模型，使用bfloat16精度以节省显
+    # 加载模型，使用bfloat16精度以节省显存
     # model = Point_R1ForCausalLM.from_pretrained(
     #     model_name, 
     #     low_cpu_mem_usage=False, 
@@ -55,8 +55,8 @@ def init_model(args):
     # # 初始化分词器和点云骨干网络配置
     # model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
     model = Point_R1ForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
-    # if "PointLLM_train_stage1" not in model_name:
-    #     model = PeftModel.from_pretrained(model, model_name)
+    if "PointLLM_train_stage1" not in model_name:
+        model = PeftModel.from_pretrained(model, model_name)
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
     model.eval()
 
@@ -195,16 +195,15 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
     default_point_start_token = point_backbone_config['default_point_start_token']
     default_point_end_token = point_backbone_config['default_point_end_token']
     mm_use_point_start_end = point_backbone_config['mm_use_point_start_end']
-    print(default_point_patch_token,default_point_start_token,default_point_end_token,mm_use_point_start_end)
+
     # 根据配置构建包含点云token的问题
     if mm_use_point_start_end:
         # 使用开始和结束token包围点云patch token
-        point_token_len =64-2
-        qs ="<|vision_start|>" + default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + "<|vision_end|>" + '\n' + qs
+        qs = default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + '\n' + qs
     else:
         # 只使用点云patch token
         qs = default_point_patch_token * point_token_len + '\n' + qs
-    print(qs)
+    
     # 构建对话
     # conv.append_message(conv.roles[0], qs)  # 用户消息
     # conv.append_message(conv.roles[1], None)  # 助手消息（待生成）
@@ -232,7 +231,6 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         object_ids = batch["object_ids"]  # 对象ID列表
 
         batchsize = len(object_ids)
-        print("!!!$$",batchsize)
 
         # 复制input_ids以匹配批次大小
         input_ids = input_ids_.repeat(batchsize, 1)  # 形状为 B, L
@@ -344,10 +342,10 @@ if __name__ == "__main__":
 
     # 数据集相关参数
     parser.add_argument("--data_path", type=str, 
-        default="../data/objaverse_data", required=False,
+        default="data/objaverse_data", required=False,
         help="点云数据的路径")
     parser.add_argument("--anno_path", type=str, 
-        default="../data/anno_data/PointLLM_brief_description_val_200_GT.json", required=False,
+        default="data/anno_data/PointLLM_brief_description_val_200_GT.json", required=False,
         help="注释数据的路径")
     parser.add_argument("--pointnum", type=int, default=8192,
         help="每个点云中的点数量")

@@ -9,10 +9,10 @@ export LDFLAGS="-Wl,--no-as-needed -ldl -laio"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
 
-model_name_or_path=outputs/PointLLM_train_stage1_v1/PointLLM_train_stage1
-data_path=../data/objaverse_data
-anno_path=../data/anno_data/PointLLM_complex_instruction_70K.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage3_v2/$filename
+model_name_or_path=outputs/PointLLM_train_stage2_v2/PointLLM_train_stage2
+data_path=data/objaverse_data
+anno_path=data/anno_data/PointLLM_complex_instruction_70K.json # or PointLLM_brief_description_660K.json (including val sets)
+output_dir=outputs/PointLLM_train_stage3/$filename
 
 # PYTHONPATH=.:$PYTHONPATH \
 
@@ -22,18 +22,18 @@ export WANDB_PROJECT="Point-R1"
 # Set random seed for reproducibility
 export PYTHONHASHSEED=0
 
-# export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
 
 # export MY_DEBUG=True
 # python pointllm/train/train_mem.py \
 # torchrun --nnodes=1 --nproc_per_node=2 --master_port=$master_port pointllm/train/train_mem.py \
-torchrun --nnodes=1 --nproc_per_node=4 --master_port=$master_port pointllm/train/train_mem.py \
+torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train/train_mem.py \
     --model_name_or_path $model_name_or_path \
     --data_path $data_path \
     --anno_path $anno_path \
     --output_dir $output_dir \
     --model_max_length 1024 \
-    --num_train_epochs 1 \
+    --num_train_epochs 3 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 1 \
@@ -59,14 +59,11 @@ torchrun --nnodes=1 --nproc_per_node=4 --master_port=$master_port pointllm/train
     --seed 42 \
     --data_seed 42 \
     --run_name stage3-point_proj_llmlora_norm \
-    --llm_train_type lora \
     --train_norm True \
-    --train_point_backbone False \
-    --train_point2Qformer_proj True \
-    --train_Qformer_lora_norm False \
-    --train_Qformer2token_proj True \
-    --train_query_tokens True \
-    --max_steps 1000
+    --lora_r 32 \
+    --lora_alpha 64 \
+    --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
 
     # --evaluation_strategy "no" \
     # --max_grad_norm 1.0 \

@@ -144,8 +144,19 @@ class PointTransformer(nn.Module):
     def load_checkpoint(self, bert_ckpt_path):
         ckpt = torch.load(bert_ckpt_path, map_location='cpu')
         state_dict = OrderedDict()
-        for k, v in ckpt['base_model'].items():
-            state_dict[k] = v
+        
+        # 检查检查点中的键名，适配不同的检查点格式
+        if 'state_dict' in ckpt:
+            source_dict = ckpt['state_dict']
+        elif 'base_model' in ckpt:
+            source_dict = ckpt['base_model']
+        else:
+            # 如果检查点直接是state_dict格式
+            source_dict = ckpt
+            
+        for k, v in source_dict.items():
+            if k.startswith('module.point_encoder.'):
+                state_dict[k.replace('module.point_encoder.', '')] = v
 
         incompatible = self.load_state_dict(state_dict, strict=False)
 

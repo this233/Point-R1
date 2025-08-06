@@ -133,12 +133,9 @@ class TrainingArguments(transformers.TrainingArguments):
     lora_target_modules: Optional[str] = field(default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj", metadata={"help": "逗号分隔的LoRA注入模块名，如q_proj,v_proj"})
 
     train_norm: bool = field(default=False, metadata={"help": "Whether to train the norm."})
+    train_point_proj: bool = field(default=False, metadata={"help": "Whether to train the point projection layer."})
     train_point_backbone: bool = field(default=False, metadata={"help": "Whether to train the point backbone."})
-    train_point2Qformer_proj: bool = field(default=False, metadata={"help": "Whether to train the point 2 Qformer projection layer."})
-    train_Qformer_lora_norm: bool = field(default=False, metadata={"help": "Whether to train the Qformer lora norm."})
-    train_Qformer2token_proj: bool = field(default=False, metadata={"help": "Whether to train the Qformer2token projection layer."})
-    train_query_tokens: bool = field(default=False, metadata={"help": "Whether to train the query tokens."})
-    # train_extra_embedding: bool = field(default=False, metadata={"help": "Whether to train the extra embedding."})
+    train_extra_embedding: bool = field(default=False, metadata={"help": "Whether to train the extra embedding."})
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
@@ -171,75 +168,27 @@ def train():
     # 构建日志器
     logger = build_logger(__name__, training_args.output_dir + '/train.log')
 
-
-    # 从预训练模型加载分词器
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=False,
-    )
-    if training_args.stage == 1:   
-        # LLM
-        model = Point_R1ForCausalLM.from_pretrained( 
+    # 根据是否为调试模式选择不同的模型加载方式
+    if training_args.model_debug:
+        # 调试模式：不加载检查点，从配置文件加载
+        config = transformers.AutoConfig.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                torch_dtype=torch.bfloat16,
+            )
+        # 从配置创建模型
+        model = Point_R1ForCausalLM._from_config(config)
+    else:
+        # 正常模式：从预训练模型加载
+        model = Point_R1ForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2",  # 启用Flash Attention 2
             # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
         )
-        # point_backbone
-        tmp = torch.load("../checkpoints/Qwen2.5-VL-3B-Instruct-Point/pc_encoder/point_model.pth")["base_model"]
-        model.get_model().language_model.point_backbone.load_state_dict(tmp, strict=False)
-
-        # Qformer
-        tmp = torch.load("../checkpoints/Qwen2.5-VL-3B-Instruct-Point/qformer/blip2_pretrained_flant5xxl.pth")['model']
-        tmp.pop("query_tokens")
-        model.get_model().language_model.load_state_dict(tmp, strict=False) 
-
-        # MiniGPT_3D_stage_3: QFormer lora & proj & pc_encoder.encoder
-        tmp = torch.load("../checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_3/MiniGPT_3D_stage_3.pth")['model']
-        all_keys=[k for k in tmp.keys()]
-        for name in all_keys:
-            if name.startswith("llama_model"):
-                tmp.pop(name)
-            if name.startswith("pc_encoder"):
-                tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
-            # point_2_Qformer_proj don't need do anything
-            # Qformer don't need do anything. like 'Qformer.bert.encoder.layer.9.attention.self.value.lora_B.default.weight'
-            if name=="llama_proj" or name=="llama_proj2":
-                tmp.pop(name)
-        model.get_model().language_model.load_state_dict(tmp, strict=False)
-
-        # MiniGPT_3D_stage_4: query_tokens & pc_encoder.encoder & Qformer.bert.embeddings.position_ids
-        tmp = torch.load("../checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_4/MiniGPT_3D_stage_4.pth")['model']
-        for name in all_keys:
-            if name.startswith("pc_encoder"):
-                tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
-            # query_tokens don't need do anything
-            # if name.startswith("query_tokens"):
-            #     tmp.pop(name)
-            # Qformer.bert.embeddings.position_ids don't need do anything
-            if name.startswith("query_expert_dict") or name.startswith("query_router"):
-                tmp.pop(name)
-        model.get_model().language_model.load_state_dict(tmp, strict=False)
-    if training_args.stage != 1:   
-        model = Point_R1ForCausalLM.from_pretrained( 
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",  # 启用Flash Attention 2
-            # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
-        )
-
-    model.to(torch.bfloat16)
-    print(model)
-
-    model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer=tokenizer) 
 
     model.requires_grad_(False)
-
     # 根据llm_train_type标志决定是否固定LLM参数
     if training_args.llm_train_type == "fix":
         # 固定所有参数
@@ -253,7 +202,7 @@ def train():
         model.get_model().language_model.llm_train_type = "lora"
         logger.warning("LLM is trainable. llm_train_type is set to 'lora'")
 
-        if training_args.stage == 3:
+        if training_args.stage == 2:
             lora_target_modules = [x.strip() for x in training_args.lora_target_modules.split(",") if x.strip()]
             for name, param in model.named_modules():
                 print(f"Parameter {name}")
@@ -278,16 +227,23 @@ def train():
             )
             model = get_peft_model(model, lora_config)
             print(model)
-        # elif training_args.stage == 3:
-        #     model = PeftModel.from_pretrained(model, model_args.model_name_or_path)
-        #     print(f"load peft model from {model_args.model_name_or_path}")
-        #     print(model)
+        elif training_args.stage == 3:
+            model = PeftModel.from_pretrained(model, model_args.model_name_or_path)
+            print(f"load peft model from {model_args.model_name_or_path}")
+            print(model)
             
-        #     # 确保预训练的LoRA参数可训练
-        #     for name, param in model.named_parameters():
-        #         if "lora_" in name:
-        #             param.requires_grad_(True)
-        #             logger.info(f"LoRA parameter {name} is set to trainable")
+            # 确保预训练的LoRA参数可训练
+            for name, param in model.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad_(True)
+                    logger.info(f"LoRA parameter {name} is set to trainable")
+    
+    if training_args.train_point_proj:
+        model.get_model().language_model.point_proj.requires_grad_(True)
+    if training_args.train_point_backbone:
+        model.get_model().language_model.point_backbone.requires_grad_(True)
+    if training_args.train_extra_embedding:
+        model.get_model().language_model.extra_embedding.requires_grad_(True)
 
     if training_args.train_norm:
         for layer in model.get_model().language_model.layers:
@@ -295,30 +251,38 @@ def train():
             layer.post_attention_layernorm.requires_grad_(True)
         model.get_model().language_model.norm.requires_grad_(True)
 
-    if training_args.train_point_backbone:
-        model.get_model().language_model.point_backbone.requires_grad_(True)
+    # 从预训练模型加载分词器
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
 
-    if training_args.train_point2Qformer_proj:
-        model.get_model().language_model.point_2_Qformer_proj.requires_grad_(True)
+    # 根据tune_mm_mlp_adapter标志决定是否训练投影层
+    if training_args.tune_mm_mlp_adapter:
+        # 投影层可训练
+        # 如果添加了新标记，可能需要设置embed_tokens的require_grad = True
+        # 这在initialize_tokenizer_point_backbone_config中完成
+        logger.info("Point projection layer is trainable.")
+    else:
+        # 固定投影层
+        model.get_model().language_model.point_proj.requires_grad_(False)
+        logger.info("Point prejcetion layer is fixed.")
 
-    if training_args.train_Qformer_lora_norm:
-        for name, param in model.get_model().language_model.Qformer.named_parameters():
-            if "lora_" in name:
-                param.requires_grad_(True)
-        for i, layer in enumerate(model.get_model().language_model.Qformer.bert.encoder.layer):
-            layer.attention.output.LayerNorm.weight.requires_grad = True
-            layer.output_query.LayerNorm.weight.requires_grad = True
-            if i % 2 == 0:
-                layer.crossattention.output.LayerNorm.weight.requires_grad = True
-        
-    if training_args.train_query_tokens:
-        model.get_model().language_model.query_tokens.requires_grad_(True)
-    if training_args.train_Qformer2token_proj:
-        model.get_model().language_model.Qformer2token_proj.requires_grad_(True)
-    
-    # if training_args.train_extra_embedding:
-    #     model.get_model().language_model.extra_embedding.requires_grad_(True)
-
+    # 根据训练阶段加载不同的配置
+    if training_args.stage == 1:   
+        # 第一阶段：假设需要从检查点加载llm、point_backbone和投影层
+        print(f"Default point_backbone_ckpt is {training_args.point_backbone_ckpt}.")
+        # 加载点云骨干网络检查点
+        model.get_model().language_model.load_point_backbone_checkpoint(training_args.point_backbone_ckpt)
+        # 初始化分词器和点云骨干网络配置
+        model.initialize_tokenizer_point_backbone_config(tokenizer=tokenizer, device=training_args.device)
+    else:
+        # 第二阶段
+        # 初始化分词器和点云骨干网络配置（不包含嵌入）
+        model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer=tokenizer) 
 
     # 获取点云骨干网络配置
     point_backbone_config = model.get_model().language_model.point_backbone_config
