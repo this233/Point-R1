@@ -16,6 +16,3 @@ env
 *.log
 working
 tmp.log
-
-train2014/
-rec_jsons_processed/

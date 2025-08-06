@@ -19,7 +19,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 from babel.numbers import parse_decimal
-from utils.math import compute_score
+from open_r1.utils.math import compute_score
 from datasets import load_dataset, load_from_disk
 from transformers import Qwen2VLForConditionalGeneration
 
@@ -41,6 +41,11 @@ from transformers.utils import logging
 from transformers import AutoProcessor, AutoTokenizer
 
 from openai import OpenAI
+
+
+from open_r1.data import ObjectPointCloudDataset, DataCollatorForPointTextDataset
+
+from transformers import Qwen2VLProcessor,Qwen2Tokenizer
 
 logger = logging.get_logger(__name__)
 
@@ -112,6 +117,16 @@ class GRPOScriptArguments(ScriptArguments):
         default=False,
         metadata={"help": "Whether to use a customized reward from vlm module"},
     )
+
+    # 训练数据路径
+    data_path: str = field(default="ScanNet", metadata={"help": "Path to the training data."})
+    # 注释数据路径，如果为None则默认使用referit3d
+    anno_path: str = field(default=None, metadata={"help": "Path to the utterance data. If None, will use referit3d by defautl."})
+    # 是否使用颜色信息
+    use_color: bool = field(default=False, metadata={"help": "Whether to use color."})
+    # 点云中点的数量
+    pointnum: int = field(default=8192, metadata={"help": "Number of points."})
+    
 
 def extract_choice(text):
     # 1. Clean and normalize text
@@ -937,100 +952,111 @@ def main(script_args, training_args, model_args):
         reward_funcs = [reward_funcs_registry[func] for func in script_args.reward_funcs]
     print("reward_funcs:", reward_funcs)
 
-    # Load the JSONL datasets
-    import json
-    from datasets import Dataset
-    
-    data_files = script_args.data_file_paths.split(":")
-    image_folders = script_args.image_folders.split(":")
 
-    if len(data_files) != len(image_folders):
-        raise ValueError("Number of data files must match number of image folders")
+    # # Load the JSONL datasets
+    # import json
+    # from datasets import Dataset
     
-    if script_args.reward_method is None:
-        accu_reward_methods = ["default"] * len(data_files)
-    else:
-        accu_reward_methods = script_args.reward_method.split(":")
-        assert len(accu_reward_methods) == len(data_files), f"Number of reward methods must match number of data files: {len(accu_reward_methods)} != {len(data_files)}"
+    # data_files = script_args.data_file_paths.split(":")
+    # image_folders = script_args.image_folders.split(":")
+
+    # if len(data_files) != len(image_folders):
+    #     raise ValueError("Number of data files must match number of image folders")
+    
+    # if script_args.reward_method is None:
+    #     accu_reward_methods = ["default"] * len(data_files)
+    # else:
+    #     accu_reward_methods = script_args.reward_method.split(":")
+    #     assert len(accu_reward_methods) == len(data_files), f"Number of reward methods must match number of data files: {len(accu_reward_methods)} != {len(data_files)}"
 
     
-    if len(data_files) != len(image_folders):
-        raise ValueError("Number of data files must match number of image folders")
+    # if len(data_files) != len(image_folders):
+    #     raise ValueError("Number of data files must match number of image folders")
     
-    all_data = []
-    for data_file, image_folder, accu_reward_method in zip(data_files, image_folders, accu_reward_methods):
-        with open(data_file, 'r') as f:
-            for line in f:
-                item = json.loads(line)
-                if 'image' in item:
-                    if isinstance(item['image'], str):
-                        # Store image path instead of loading the image
-                        item['image_path'] = [os.path.join(image_folder, item['image'])]
-                        del item['image'] # remove the image column so that it can be loaded later
-                    elif isinstance(item['image'], list):
-                        # if the image is a list, then it is a list of images (for multi-image input)
-                        item['image_path'] = [os.path.join(image_folder, image) for image in item['image']]
-                        del item['image'] # remove the image column so that it can be loaded later
-                    else:
-                        raise ValueError(f"Unsupported image type: {type(item['image'])}")
-                # Remove immediate image loading
-                item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
+    # all_data = []
+    # for data_file, image_folder, accu_reward_method in zip(data_files, image_folders, accu_reward_methods):
+    #     with open(data_file, 'r') as f:
+    #         for line in f:
+    #             item = json.loads(line)
+    #             if 'image' in item:
+    #                 if isinstance(item['image'], str):
+    #                     # Store image path instead of loading the image
+    #                     item['image_path'] = [os.path.join(image_folder, item['image'])]
+    #                     del item['image'] # remove the image column so that it can be loaded later
+    #                 elif isinstance(item['image'], list):
+    #                     # if the image is a list, then it is a list of images (for multi-image input)
+    #                     item['image_path'] = [os.path.join(image_folder, image) for image in item['image']]
+    #                     del item['image'] # remove the image column so that it can be loaded later
+    #                 else:
+    #                     raise ValueError(f"Unsupported image type: {type(item['image'])}")
+    #             # Remove immediate image loading
+    #             item['problem'] = item['conversations'][0]['value'].replace('<image>', '')
                 
-                # Handle solution that could be a float or string
-                solution_value = item['conversations'][1]['value']
-                if isinstance(solution_value, str):
-                    item['solution'] = solution_value.replace('<answer>', '').replace('</answer>', '').strip()
-                else:
-                    # If it's a float or other non-string type, keep it as is
-                    item['solution'] = str(solution_value)
+    #             # Handle solution that could be a float or string
+    #             solution_value = item['conversations'][1]['value']
+    #             if isinstance(solution_value, str):
+    #                 item['solution'] = solution_value.replace('<answer>', '').replace('</answer>', '').strip()
+    #             else:
+    #                 # If it's a float or other non-string type, keep it as is
+    #                 item['solution'] = str(solution_value)
                 
-                del item['conversations']
-                item['accu_reward_method'] = item.get('accu_reward_method', accu_reward_method) # if accu_reward_method is in the data jsonl, use the value in the data jsonl, otherwise use the defined value
-                all_data.append(item)
+    #             del item['conversations']
+    #             item['accu_reward_method'] = item.get('accu_reward_method', accu_reward_method) # if accu_reward_method is in the data jsonl, use the value in the data jsonl, otherwise use the defined value
+    #             all_data.append(item)
 
-    dataset = Dataset.from_list(all_data)
+    # dataset = Dataset.from_list(all_data)
 
-    def make_conversation_from_jsonl(example):
-        if 'image_path' in example and example['image_path'] is not None:
-            assert all(os.path.exists(p) for p in example['image_path']), f"Image paths do not exist: {example['image_path']}"
-            # Don't load image here, just store the path
-            return {
-                'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
-                'problem': example['problem'],
-                'solution': f"<answer> {example['solution']} </answer>",
-                'accu_reward_method': example['accu_reward_method'],
-                'prompt': [{
-                    'role': 'user',
-                    'content': [
-                        *({'type': 'image', 'text': None} for _ in range(len(example['image_path']))),
-                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
-                    ]
-                }]
-            }
-        else:
-            return {
-                'problem': example['problem'],
-                'solution': f"<answer> {example['solution']} </answer>",
-                'accu_reward_method': example['accu_reward_method'],
-                'prompt': [{
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
-                    ]
-                }]
-            }
+    # def make_conversation_from_jsonl(example):
+    #     if 'image_path' in example and example['image_path'] is not None:
+    #         assert all(os.path.exists(p) for p in example['image_path']), f"Image paths do not exist: {example['image_path']}"
+    #         # Don't load image here, just store the path
+    #         return {
+    #             'image_path': [p for p in example['image_path']],  # Store path instead of loaded image
+    #             'problem': example['problem'],
+    #             'solution': f"<answer> {example['solution']} </answer>",
+    #             'accu_reward_method': example['accu_reward_method'],
+    #             'prompt': [{
+    #                 'role': 'user',
+    #                 'content': [
+    #                     *({'type': 'image', 'text': None} for _ in range(len(example['image_path']))),
+    #                     {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
+    #                 ]
+    #             }]
+    #         }
+    #     else:
+    #         return {
+    #             'problem': example['problem'],
+    #             'solution': f"<answer> {example['solution']} </answer>",
+    #             'accu_reward_method': example['accu_reward_method'],
+    #             'prompt': [{
+    #                 'role': 'user',
+    #                 'content': [
+    #                     {'type': 'text', 'text': question_prompt.format(Question=example['problem'])}
+    #                 ]
+    #             }]
+    #         }
 
-    # Map the conversations
-    dataset = dataset.map(make_conversation_from_jsonl, num_proc=8)
+    # # Map the conversations
+    # dataset = dataset.map(make_conversation_from_jsonl, num_proc=8)
 
-    # Split dataset for validation if requested
-    splits = {'train': dataset}
-    if script_args.val_split_ratio > 0:
-        train_val_split = dataset.train_test_split(
-            test_size=script_args.val_split_ratio
-        )
-        splits['train'] = train_val_split['train']
-        splits['validation'] = train_val_split['test']
+    # # Split dataset for validation if requested
+    # splits = {'train': dataset}
+    # if script_args.val_split_ratio > 0:
+    #     train_val_split = dataset.train_test_split(
+    #         test_size=script_args.val_split_ratio
+    #     )
+    #     splits['train'] = train_val_split['train']
+    #     splits['validation'] = train_val_split['test']
+
+    data_collator = DataCollatorForPointTextDataset(tokenizer=tokenizer)
+    train_dataset = ObjectPointCloudDataset(  # 创建训练数据集对象
+        split='train',  # 设置数据集分割类型为训练
+        data_path=script_args.data_path,  # 设置数据路径
+        anno_path=script_args.anno_path,  # 设置标注文件路径
+        pointnum=script_args.pointnum,  # 设置点云中点的数量
+        use_color=script_args.use_color,  # 设置是否使用颜色信息
+        tokenizer=tokenizer,  # 传入分词器
+    )
 
     # Select trainer class based on vlm_trainer argument
     trainer_cls = VLMGRPOTrainer
@@ -1042,8 +1068,10 @@ def main(script_args, training_args, model_args):
         reward_funcs=reward_funcs,
         args=training_args,
         vlm_module=vlm_module_cls(),
-        train_dataset=splits['train'],
-        eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,
+        train_dataset=train_dataset,
+        data_collator=data_collator,
+        # train_dataset=splits['train'],
+        # eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,
         peft_config=get_peft_config(model_args),
         freeze_vision_modules=model_args.freeze_vision_modules,
         attn_implementation=model_args.attn_implementation,

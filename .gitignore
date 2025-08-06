@@ -171,9 +171,9 @@ cython_debug/
 .pypirc
 
 # Temp folders
-data/
+# data/
 wandb/
-scripts/
+# scripts/
 checkpoints/
 .vscode/
 .cursor/
@@ -184,7 +184,7 @@ rec_jsons_processed/
 test/
 images_eval/
 *.zip
-*.txt
+# *.txt
 runs/
 temps/
 src/open-r1-multimodal/src/open_r1/grpo_jsonl_ocr.py
@@ -192,3 +192,8 @@ src/open-r1-multimodal/src/open_r1/grpo_jsonl_ocr.py
 
 train2014/
 rec_jsons_processed/
+data/anno_data
+data/modelnet40_data
+data/objaverse_data
+models
+image_data/

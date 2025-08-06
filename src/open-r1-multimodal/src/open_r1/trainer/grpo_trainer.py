@@ -536,6 +536,8 @@ class VLMGRPOTrainer(Trainer):
 
     def _generate_and_score_completions(self, inputs: dict[str, Union[torch.Tensor, Any]], model) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
+
+        
         prompts = [x["prompt"] for x in inputs]
         prompts_text = self.vlm_module.prepare_prompt(self.processing_class, inputs)
         # Handle both pre-loaded images and image paths
@@ -567,15 +569,15 @@ class VLMGRPOTrainer(Trainer):
                 
 
         prompt_inputs, additional_output = self.vlm_module.prepare_model_inputs(
-            self.processing_class,
-            prompts_text,
-            images,
+            self.processing_class, #Qwen2_5_VLProcessor(Qwen2VLImageProcessor+Qwen2TokenizerFast)
+            prompts_text, # [toenizer后的文本，多模态部分为<|vision_start|><|image_pad|><|vision_end|>]
+            images,# [PIL.JpegImagePlugin.JpegImageFile]
             return_tensors="pt",
             padding=True,
             padding_side="left",
             add_special_tokens=False,
-        )
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        ) # prompt_inputs={'input_ids':[[]]8x495,'attention_mask':[[]]8x495,'pixel_values':[[]]13248x1176,'image_grid_thw':[[1,36,46]*8]8x3}    additional_output=[{'image_grid_thw':[1,36,46]}*8]
+        prompt_inputs = super()._prepare_inputs(prompt_inputs) # 放到device上
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
         # image_grid_thw may be needed for the reward function
@@ -584,13 +586,7 @@ class VLMGRPOTrainer(Trainer):
             for i, (input_i, additional_output_i) in enumerate(zip(inputs, additional_output)):
                 input_i.update(additional_output_i)
 
-
-        # max_prompt_length is not supported yet
-        # if self.max_prompt_length is not None:
-        #     prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-        #     prompt_inputs["input_ids"] = prompt_ids
-        #     prompt_mask = prompt_mask[:, -self.max_prompt_length :]
-        #     prompt_inputs["attention_mask"] = prompt_mask
+                
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
@@ -620,7 +616,7 @@ class VLMGRPOTrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
         # Get the multimodal inputs
-        multimodal_keywords = self.vlm_module.get_custom_multimodal_keywords()
+        multimodal_keywords = self.vlm_module.get_custom_multimodal_keywords() # ['pixel_values', 'image_grid_thw']
         multimodal_inputs = {k: prompt_inputs[k] if k in prompt_inputs else None for k in multimodal_keywords}
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
