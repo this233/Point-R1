@@ -234,15 +234,16 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
 
         self.init_point_backbone(config)
 
-        self.init_point2Qformer_proj(config)
+        # self.init_point2Qformer_proj(config)
 
-        self.init_Qformer(
-            num_query_token=32, vision_width=1408,
-            QFormer_lora_r=config.QFormer_lora_r,
-            train_QFormer_norm=config.train_QFormer_norm,
-            QFormer_lora_module=config.QFormer_lora_module,
-        )
-        self.init_Qformer2token_proj()
+        # self.init_Qformer(
+        #     num_query_token=32, vision_width=1408,
+        #     QFormer_lora_r=config.QFormer_lora_r,
+        #     train_QFormer_norm=config.train_QFormer_norm,
+        #     QFormer_lora_module=config.QFormer_lora_module,
+        # )
+        # self.init_Qformer2token_proj()
+        self.init_point_proj()
 
         self.fix_pointnet = False
         self.llm_train_type = "fix"
@@ -283,31 +284,31 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         logger.info(f"Using {self.point_backbone.point_dims} dim of points.")
         # 记录使用的点云维度信息
 
-            self.point_backbone_config = {
-                # 创建点云骨干网络配置字典
-                "point_cloud_dim": point_bert_config.model.point_dims,
-                # 点云维度
-                # "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
-                "backbone_output_dim": point_bert_config.model.trans_dim*2,
-                # 骨干网络输出维度，如果使用最大池化则维度翻倍
-                "project_output_dim": self.config.hidden_size,
-                # 投影输出维度，等于隐藏层大小
-                "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
-                # 点云token长度，包含CLS token，如果使用最大池化则为1
-                "mm_use_point_start_end": self.config.mm_use_point_start_end,
-                # 是否使用点云开始和结束token
-                "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
-                # 投影隐藏层数量，默认为0
-                "use_max_pool": use_max_pool
-                # 是否使用最大池化
-            }
-            if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
-                # 如果投影隐藏层数量大于0
-                self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
-                # 添加投影隐藏层维度配置（是一个列表）
-            
-            logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
-            # 记录最大池化使用情况和点云token数量
+        self.point_backbone_config = {
+            # 创建点云骨干网络配置字典
+            "point_cloud_dim": point_bert_config.model.point_dims,
+            # 点云维度
+            # "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
+            "backbone_output_dim": point_bert_config.model.trans_dim*2,
+            # 骨干网络输出维度，如果使用最大池化则维度翻倍
+            "project_output_dim": self.config.hidden_size,
+            # 投影输出维度，等于隐藏层大小
+            "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
+            # 点云token长度，包含CLS token，如果使用最大池化则为1
+            "mm_use_point_start_end": self.config.mm_use_point_start_end,
+            # 是否使用点云开始和结束token
+            "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
+            # 投影隐藏层数量，默认为0
+            "use_max_pool": use_max_pool
+            # 是否使用最大池化
+        }
+        if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
+            # 如果投影隐藏层数量大于0
+            self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
+            # 添加投影隐藏层维度配置（是一个列表）
+        
+        logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
+        # 记录最大池化使用情况和点云token数量
 
         self.init_point_proj()
 
@@ -399,8 +400,8 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                 point_features = self.point_backbone(point_clouds) # 16x513x384 BxLxC
                 # 直接通过点云骨干网络处理点云
 
-                    # 16x513x384 -> 16x513x768 ：把point[:,0,:]接上去
-                    point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
+                # 16x513x384 -> 16x513x768 ：把point[:,0,:]接上去
+                point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
 
             if type(point_clouds) is list:
                 # 如果点云数据是列表类型
@@ -624,8 +625,8 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         # 获取隐藏状态
         logits = self.lm_head(hidden_states) # 16x593x151668
         # # 通过语言模型头部计算logits
-        if self.config.text_config.n_extra_tokens > 0:
-            logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
+        # if self.config.text_config.n_extra_tokens > 0:
+        #     logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
         # print(self.extra_lm_head,flush=True,file=sys.stderr)
         # print((hidden_states @ self.extra_lm_head.T).max(),flush=True,file=sys.stderr)
         # exit()

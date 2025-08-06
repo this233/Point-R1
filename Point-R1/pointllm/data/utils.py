@@ -309,7 +309,7 @@ def preprocess_multimodal_point_cloud(
         for sentence in source:  # 遍历每句话
             replace_token = default_point_patch_token * (point_token_len-2)  # 构造替换token
             # # DEBUG
-            replace_token = default_point_patch_token * (32-2)
+            replace_token = default_point_patch_token * (513-2)
             if point_backbone_config['mm_use_point_start_end']:  # 如果使用开始和结束token
                 replace_token = "<|vision_start|>" + point_backbone_config['default_point_start_token'] + replace_token + point_backbone_config['default_point_end_token'] + "<|vision_end|>"
             sentence["value"] = sentence["value"].replace(point_indicator, replace_token)  # 替换点云指示符

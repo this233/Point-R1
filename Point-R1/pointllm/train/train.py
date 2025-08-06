@@ -134,11 +134,12 @@ class TrainingArguments(transformers.TrainingArguments):
 
     train_norm: bool = field(default=False, metadata={"help": "Whether to train the norm."})
     train_point_backbone: bool = field(default=False, metadata={"help": "Whether to train the point backbone."})
-    train_point2Qformer_proj: bool = field(default=False, metadata={"help": "Whether to train the point 2 Qformer projection layer."})
-    train_Qformer_lora_norm: bool = field(default=False, metadata={"help": "Whether to train the Qformer lora norm."})
-    train_Qformer2token_proj: bool = field(default=False, metadata={"help": "Whether to train the Qformer2token projection layer."})
-    train_query_tokens: bool = field(default=False, metadata={"help": "Whether to train the query tokens."})
-    # train_extra_embedding: bool = field(default=False, metadata={"help": "Whether to train the extra embedding."})
+    # train_point2Qformer_proj: bool = field(default=False, metadata={"help": "Whether to train the point 2 Qformer projection layer."})
+    # train_Qformer_lora_norm: bool = field(default=False, metadata={"help": "Whether to train the Qformer lora norm."})
+    # train_Qformer2token_proj: bool = field(default=False, metadata={"help": "Whether to train the Qformer2token projection layer."})
+    # train_query_tokens: bool = field(default=False, metadata={"help": "Whether to train the query tokens."})
+    train_point_proj: bool = field(default=False, metadata={"help": "Whether to train the point projection layer."})
+
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
@@ -190,37 +191,37 @@ def train():
             # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
         )
         # point_backbone
-        tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/pc_encoder/point_model.pth")["base_model"]
+        tmp = torch.load("../checkpoints/Qwen2.5-VL-3B-Instruct-Point/pc_encoder/point_model.pth")["base_model"]
         model.get_model().language_model.point_backbone.load_state_dict(tmp, strict=False)
 
-        # Qformer
-        tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/qformer/blip2_pretrained_flant5xxl.pth")['model']
-        model.get_model().language_model.load_state_dict(tmp, strict=False) 
+        # # Qformer
+        # tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/qformer/blip2_pretrained_flant5xxl.pth")['model']
+        # model.get_model().language_model.load_state_dict(tmp, strict=False) 
 
-        # MiniGPT_3D_stage_3: QFormer lora & proj & pc_encoder.encoder
-        tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_3/MiniGPT_3D_stage_3.pth")['model']
-        all_keys=[k for k in tmp.keys()]
-        for name in all_keys:
-            if name.startswith("llama_model"):
-                tmp.pop(name)
-            if name.startswith("pc_encoder"):
-                tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
-            # point_2_Qformer_proj don't need do anything
-            # Qformer don't need do anything. like 'Qformer.bert.encoder.layer.9.attention.self.value.lora_B.default.weight'
-            if name=="llama_proj" or name=="llama_proj2":
-                tmp.pop(name)
-        model.get_model().language_model.load_state_dict(tmp, strict=False)
+        # # MiniGPT_3D_stage_3: QFormer lora & proj & pc_encoder.encoder
+        # tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_3/MiniGPT_3D_stage_3.pth")['model']
+        # all_keys=[k for k in tmp.keys()]
+        # for name in all_keys:
+        #     if name.startswith("llama_model"):
+        #         tmp.pop(name)
+        #     if name.startswith("pc_encoder"):
+        #         tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
+        #     # point_2_Qformer_proj don't need do anything
+        #     # Qformer don't need do anything. like 'Qformer.bert.encoder.layer.9.attention.self.value.lora_B.default.weight'
+        #     if name=="llama_proj" or name=="llama_proj2":
+        #         tmp.pop(name)
+        # model.get_model().language_model.load_state_dict(tmp, strict=False)
 
-        # MiniGPT_3D_stage_4: query_tokens & pc_encoder.encoder & Qformer.bert.embeddings.position_ids
-        tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_4/MiniGPT_3D_stage_4.pth")['model']
-        for name in all_keys:
-            if name.startswith("pc_encoder"):
-                tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
-            # query_tokens don't need do anything
-            # Qformer.bert.embeddings.position_ids don't need do anything
-            if name.startswith("query_expert_dict") or name.startswith("query_router"):
-                tmp.pop(name)
-        model.get_model().language_model.load_state_dict(tmp, strict=False)
+        # # MiniGPT_3D_stage_4: query_tokens & pc_encoder.encoder & Qformer.bert.embeddings.position_ids
+        # tmp = torch.load("checkpoints/Qwen2.5-VL-3B-Instruct-Point/MiniGPT_3D_stage_4/MiniGPT_3D_stage_4.pth")['model']
+        # for name in all_keys:
+        #     if name.startswith("pc_encoder"):
+        #         tmp[name.replace("pc_encoder", "point_backbone")] = tmp.pop(name)
+        #     # query_tokens don't need do anything
+        #     # Qformer.bert.embeddings.position_ids don't need do anything
+        #     if name.startswith("query_expert_dict") or name.startswith("query_router"):
+        #         tmp.pop(name)
+        # model.get_model().language_model.load_state_dict(tmp, strict=False)
 
     model.to(torch.bfloat16)
     print(model)
@@ -287,27 +288,26 @@ def train():
     if training_args.train_point_backbone:
         model.get_model().language_model.point_backbone.requires_grad_(True)
 
-    if training_args.train_point2Qformer_proj:
-        model.get_model().language_model.point_2_Qformer_proj.requires_grad_(True)
+    # if training_args.train_point2Qformer_proj:
+    #     model.get_model().language_model.point_2_Qformer_proj.requires_grad_(True)
 
-    if training_args.train_Qformer_lora_norm:
-        for name, param in model.get_model().language_model.Qformer.named_parameters():
-            if "lora_" in name:
-                param.requires_grad_(True)
-        for i, layer in enumerate(model.get_model().language_model.Qformer.bert.encoder.layer):
-            layer.attention.output.LayerNorm.weight.requires_grad = True
-            layer.output_query.LayerNorm.weight.requires_grad = True
-            if i % 2 == 0:
-                layer.crossattention.output.LayerNorm.weight.requires_grad = True
+    # if training_args.train_Qformer_lora_norm:
+    #     for name, param in model.get_model().language_model.Qformer.named_parameters():
+    #         if "lora_" in name:
+    #             param.requires_grad_(True)
+    #     for i, layer in enumerate(model.get_model().language_model.Qformer.bert.encoder.layer):
+    #         layer.attention.output.LayerNorm.weight.requires_grad = True
+    #         layer.output_query.LayerNorm.weight.requires_grad = True
+    #         if i % 2 == 0:
+    #             layer.crossattention.output.LayerNorm.weight.requires_grad = True
         
-    if training_args.train_query_tokens:
-        model.get_model().language_model.query_tokens.requires_grad_(True)
-    if training_args.train_Qformer2token_proj:
-        model.get_model().language_model.Qformer2token_proj.requires_grad_(True)
-    
-    # if training_args.train_extra_embedding:
-    #     model.get_model().language_model.extra_embedding.requires_grad_(True)
-
+    # if training_args.train_query_tokens:
+    #     model.get_model().language_model.query_tokens.requires_grad_(True)
+    # if training_args.train_Qformer2token_proj:
+    #     model.get_model().language_model.Qformer2token_proj.requires_grad_(True)
+    if training_args.train_point_proj:
+        model.get_model().language_model.point_proj.requires_grad_(True)
+        
 
     # 获取点云骨干网络配置
     point_backbone_config = model.get_model().language_model.point_backbone_config

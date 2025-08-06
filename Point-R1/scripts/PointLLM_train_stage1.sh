@@ -8,11 +8,11 @@ export LDFLAGS="-Wl,--no-as-needed -ldl -laio"
 
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
-model_name_or_path=checkpoints/Qwen2.5-VL-3B-Instruct-Point
-data_path=data/objaverse_data
-anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
+model_name_or_path=../checkpoints/Qwen2.5-VL-3B-Instruct-Point
+data_path=../data/objaverse_data
+anno_path=../data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
 output_dir=outputs/PointLLM_train_stage1_v2/$filename
-point_backbone_ckpt=checkpoints/Qwen2.5-VL-3B-Instruct-Point/point_bert_v1.2.pt
+point_backbone_ckpt=../checkpoints/Qwen2.5-VL-3B-Instruct-Point/point_bert_v1.2.pt
 
 # PYTHONPATH=.:$PYTHONPATH \
 
@@ -22,12 +22,12 @@ export WANDB_PROJECT="Point-R1"
 # Set random seed for reproducibility
 export PYTHONHASHSEED=0
 
-export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
+# export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
 
 # export MY_DEBUG=True
 # python pointllm/train/train_mem.py \
 # torchrun --nnodes=1 --nproc_per_node=2 --master_port=$master_port pointllm/train/train_mem.py \
-torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train/train_mem.py \
+torchrun --nnodes=1 --nproc_per_node=4 --master_port=$master_port pointllm/train/train_mem.py \
     --model_name_or_path $model_name_or_path \
     --data_path $data_path \
     --anno_path $anno_path \
@@ -62,7 +62,6 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --train_norm False \
     --train_point_proj True \
     --train_point_backbone False \
-    --train_extra_embedding False \
     --max_steps 5000 \
 
     # --evaluation_strategy "no" \
