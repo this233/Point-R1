@@ -74,9 +74,13 @@ GPT_PRICES = {
         "price_1k_prompt_tokens": 0.01,
         "price_1k_completion_tokens": 0.03
     },
-    "gpt-4":{
+    "gpt-4-0125-preview":{
         "price_1k_prompt_tokens": 0.03,
         "price_1k_completion_tokens": 0.06
+    },
+    "gpt-4.1":{
+        "price_1k_prompt_tokens": 0.002,
+        "price_1k_completion_tokens": 0.008
     }
 }
 

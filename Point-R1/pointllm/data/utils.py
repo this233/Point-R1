@@ -307,7 +307,7 @@ def preprocess_multimodal_point_cloud(
 
     for source in sources:  # 遍历每个源
         for sentence in source:  # 遍历每句话
-            replace_token = default_point_patch_token * point_token_len  # 构造替换token
+            replace_token = default_point_patch_token * (point_token_len-2)  # 构造替换token
             # # DEBUG
             replace_token = default_point_patch_token * (32-2)
             if point_backbone_config['mm_use_point_start_end']:  # 如果使用开始和结束token

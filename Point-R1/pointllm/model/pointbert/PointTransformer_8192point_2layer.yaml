@@ -9,8 +9,8 @@ model : {
   num_group: 512,
   encoder_dims: 256,
   point_dims: 3,
-  projection_hidden_layer: 2,
-  projection_hidden_dim: [1024, 2048],
+  projection_hidden_layer: 13,
+  projection_hidden_dim: [1024,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048,2048],
   use_max_pool: false
 }
 npoints: 8192
