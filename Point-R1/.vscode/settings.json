@@ -1,0 +1,6 @@
+{
+    // "python.terminal.activateEnvironment": false,
+    "debugpy.showPythonInlineValues": true,
+    "debugpy.debugJustMyCode": false,
+    "python.terminal.activateEnvironment": true
+}
