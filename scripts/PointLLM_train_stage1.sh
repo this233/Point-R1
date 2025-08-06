@@ -11,7 +11,7 @@ export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 model_name_or_path=checkpoints/Qwen2.5-VL-3B-Instruct-Point
 data_path=data/objaverse_data
 anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage1_v9/$filename
+output_dir=outputs/PointLLM_train_stage1_v2/$filename
 point_backbone_ckpt=checkpoints/Qwen2.5-VL-3B-Instruct-Point/point_bert_v1.2.pt
 
 # PYTHONPATH=.:$PYTHONPATH \
@@ -40,7 +40,7 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --save_strategy "no" \
     --save_steps 2400 \
     --save_total_limit 1 \
-    --learning_rate 3e-5 \
+    --learning_rate 3e-4 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
@@ -60,12 +60,10 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --run_name stage1-point_proj_and_embedding_and_pointbackbone \
     --llm_train_type fix \
     --train_norm False \
+    --train_point_proj True \
     --train_point_backbone False \
-    --train_point2Qformer_proj False \
-    --train_Qformer_lora_norm False \
-    --train_Qformer2token_proj True \
-    --train_query_tokens False \
-    --max_steps 3000
+    --train_extra_embedding False \
+    --max_steps 5000 \
 
     # --evaluation_strategy "no" \
     # --max_grad_norm 1.0 \

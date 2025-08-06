@@ -188,7 +188,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
 
     # 获取点云骨干网络的配置
     point_backbone_config = model.get_model().language_model.point_backbone_config
-    point_token_len = point_backbone_config['point_token_len']
+    point_token_len = point_backbone_config['point_token_len']-2
     # DEBUG
     # point_token_len = 1+64
     default_point_patch_token = point_backbone_config['default_point_patch_token']
@@ -199,8 +199,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
     # 根据配置构建包含点云token的问题
     if mm_use_point_start_end:
         # 使用开始和结束token包围点云patch token
-        point_token_len =30
-        qs ="<|vision_start|>" + default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + "<|vision_end|>" + '\n' + qs
+        qs = "<|vision_start|>"+default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token +"<|vision_end|>" '\n' + qs
     else:
         # 只使用点云patch token
         qs = default_point_patch_token * point_token_len + '\n' + qs
@@ -367,8 +366,8 @@ if __name__ == "__main__":
         help="提示词索引（0-2）")
     parser.add_argument("--start_eval", action="store_true", default=False,
         help="是否在生成后立即开始评估")
-    parser.add_argument("--gpt_type", type=str, default="gpt-4-0613", 
-        choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4"],
+    parser.add_argument("--gpt_type", type=str, default="gpt-4.1", 
+        choices=["gpt-3.5-turbo-0613", "gpt-3.5-turbo-1106", "gpt-4-0613", "gpt-4-1106-preview", "gpt-4.1"],
         help="用于评估的GPT模型类型")
     parser.add_argument("--task_type", type=str, default="classification", 
         choices=["captioning", "classification"],

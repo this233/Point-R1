@@ -47,6 +47,93 @@ logger = logging.getLogger(__name__)
 # 设置为INFO级别
 logger.setLevel(logging.INFO)
 
+
+class ImprovedMLPProjector(nn.Module):
+    """
+    改进的MLP投影器，解决梯度消失问题
+    """
+    def __init__(self, input_dim, hidden_dims, output_dim, 
+                 use_layer_norm=True, use_residual=True, dropout_rate=0.1, activation='gelu'):
+        super(ImprovedMLPProjector, self).__init__()
+        
+        self.use_residual = use_residual
+        self.layers = nn.ModuleList()
+        
+        dims = [input_dim] + hidden_dims + [output_dim]
+        
+        for i in range(len(dims) - 1):
+            # 构建每一层
+            layer_components = []
+            
+            # 1. 线性层
+            linear = nn.Linear(dims[i], dims[i + 1])
+            layer_components.append(linear)
+            
+            # 2. Layer Normalization (在激活之前)
+            if use_layer_norm and i < len(dims) - 2:  # 最后一层不加normalization
+                layer_components.append(nn.LayerNorm(dims[i + 1]))
+            
+            # 3. 激活函数 (除最后一层)
+            if i < len(dims) - 2:
+                if activation.lower() == 'gelu':
+                    layer_components.append(nn.GELU())
+                elif activation.lower() == 'relu':
+                    layer_components.append(nn.ReLU())
+                elif activation.lower() == 'swish':
+                    layer_components.append(nn.SiLU())
+                else:
+                    layer_components.append(nn.GELU())
+            
+            # 4. Dropout (除最后一层)
+            if dropout_rate > 0 and i < len(dims) - 2:
+                layer_components.append(nn.Dropout(dropout_rate))
+            
+            self.layers.append(nn.Sequential(*layer_components))
+        
+        # 残差连接的投影层 (当输入和输出维度不同时)
+        if use_residual:
+            self.residual_projections = nn.ModuleList()
+            for i in range(len(dims) - 1):
+                if dims[i] != dims[i + 1]:
+                    # 需要投影
+                    self.residual_projections.append(nn.Linear(dims[i], dims[i + 1]))
+                else:
+                    # 维度相同，恒等映射
+                    self.residual_projections.append(nn.Identity())
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        """改进的权重初始化，针对GELU激活函数优化"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # 对于GELU激活函数，使用Xavier normal初始化效果更好
+                nn.init.xavier_normal_(module.weight, gain=1.0)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+            elif isinstance(module, nn.LayerNorm):
+                nn.init.constant_(module.weight, 1.0)
+                nn.init.constant_(module.bias, 0)
+    
+    def forward(self, x):
+        identity = x
+        
+        for i, layer in enumerate(self.layers):
+            # 前向传播
+            out = layer(x)
+            
+            # 残差连接 (除了最后一层)
+            if self.use_residual and i < len(self.layers) - 1:
+                # 如果维度不匹配，使用投影
+                projected_identity = self.residual_projections[i](identity)
+                out = out + projected_identity
+                identity = out  # 更新identity为当前输出
+            
+            x = out
+        
+        return x
+
+
 class Point_R1TextConfig(Qwen2_5_VLTextConfig):
     # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
     model_type = "point_r1_text"
@@ -71,6 +158,76 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
     config_class = Point_R1TextConfig 
     # 指定配置类为PointLLMConfig
 
+    def init_point_proj(self):
+        # * print relevant info with projection layers
+        # 打印投影层相关信息
+        backbone_output_dim = self.point_backbone_config["backbone_output_dim"]
+        # 获取骨干网络输出维度
+        logger.info(f"Point backbone output dim: {backbone_output_dim}.")
+        # 记录点云骨干网络输出维度
+        logger.info(f"Use {self.point_backbone_config['projection_hidden_layer']} projection hiddent layers.")
+        # 记录使用的投影隐藏层数量
+        
+        if self.point_backbone_config['projection_hidden_layer'] > 0:
+            # 如果投影隐藏层数量大于0
+            # Add projection layer with linear layers and GELU activation
+            # 添加带有线性层和GELU激活函数的投影层
+            # projection_layers = [nn.Linear(backbone_output_dim, self.point_backbone_config["projection_hidden_dim"][0])]\
+            #     +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) if i%2==1
+            #     else nn.Linear(backbone_output_dim + self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) for i in range(1,self.point_backbone_config["projection_hidden_layer"])]\
+            #     +[nn.Linear(backbone_output_dim + self.point_backbone_config["projection_hidden_dim"][-1], self.point_backbone_config["project_output_dim"])]
+            # projection_layers.append(nn.LayerNorm(backbone_output_dim, eps=1e-5))
+            projection_layers = [nn.Linear(backbone_output_dim, self.point_backbone_config["projection_hidden_dim"][0])]\
+                +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) for i in range(1,self.point_backbone_config["projection_hidden_layer"])]\
+                +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][-1], self.point_backbone_config["project_output_dim"])]
+
+# origin = point_features
+#                 for i, layer in enumerate(self.point_proj):
+#                     if i != 0:
+#                         point_features = F.gelu(point_features)
+#                     point_features = layer(point_features) if i%2==1 or i==0 else layer(torch.cat((origin, point_features), dim=-1))
+
+
+            # # 创建投影层列表
+            # last_dim = backbone_output_dim
+            # # 设置上一层的维度为骨干网络输出维度
+            # for i in range(self.point_bert_config.model.projection_hidden_layer):
+            #     # 遍历每个投影隐藏层
+            #     projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["projection_hidden_dim"][i]))
+            #     # 添加线性层
+            #     projection_layers.append(nn.GELU())
+            #     # 添加GELU激活函数
+            #     last_dim = self.point_backbone_config["projection_hidden_dim"][i]
+            #     # 更新上一层维度
+
+            # projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["project_output_dim"]))
+            # # 添加最后的投影层
+            # self.point_proj = nn.Sequential(*projection_layers)
+
+            self.point_proj = nn.ModuleList(projection_layers)
+
+            # 创建顺序模型作为点云投影器
+            # self.point_proj = ImprovedMLPProjector(
+            #     input_dim=backbone_output_dim,
+            #     hidden_dims=self.point_backbone_config["projection_hidden_dim"], 
+            #     output_dim=self.point_backbone_config["project_output_dim"],
+            #     use_layer_norm=True,
+            #     use_residual=True,
+            #     dropout_rate=0.1,
+            #     activation='gelu'
+            # )
+            logger.info(f"Each layer with {self.point_bert_config.model.projection_hidden_dim} hidden units.")
+            # 记录每层的隐藏单元数量
+        else:
+            # 否则（没有投影隐藏层）
+            # Single layer
+            # 单层投影
+            self.point_proj = nn.Linear(backbone_output_dim, self.point_backbone_config['project_output_dim'])
+            # 创建单层线性投影
+        logger.info(f"Point projector output dim: {self.point_backbone_config['project_output_dim']}.")
+        # 记录点云投影器输出维度
+        
+        
     def __init__(self, config: Point_R1TextConfig):
         # 初始化方法，接收LlamaConfig类型的配置参数
         super(Point_R1TextModel, self).__init__(config)
@@ -126,103 +283,67 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         logger.info(f"Using {self.point_backbone.point_dims} dim of points.")
         # 记录使用的点云维度信息
 
-        self.point_backbone_config = {
-            # 创建点云骨干网络配置字典
-            "point_cloud_dim": point_bert_config.model.point_dims,
-            # 点云维度
-            "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
-            # 骨干网络输出维度，如果使用最大池化则维度翻倍
-            "project_output_dim": self.config.hidden_size,
-            # 投影输出维度，等于隐藏层大小
-            "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
-            # 点云token长度，包含CLS token，如果使用最大池化则为1
-            "mm_use_point_start_end": self.config.mm_use_point_start_end,
-            # 是否使用点云开始和结束token
-            "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
-            # 投影隐藏层数量，默认为0
-            "use_max_pool": use_max_pool
-            # 是否使用最大池化
-        }
-        if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
-            # 如果投影隐藏层数量大于0
-            self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
-            # 添加投影隐藏层维度配置（是一个列表）
+            self.point_backbone_config = {
+                # 创建点云骨干网络配置字典
+                "point_cloud_dim": point_bert_config.model.point_dims,
+                # 点云维度
+                # "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
+                "backbone_output_dim": point_bert_config.model.trans_dim*2,
+                # 骨干网络输出维度，如果使用最大池化则维度翻倍
+                "project_output_dim": self.config.hidden_size,
+                # 投影输出维度，等于隐藏层大小
+                "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
+                # 点云token长度，包含CLS token，如果使用最大池化则为1
+                "mm_use_point_start_end": self.config.mm_use_point_start_end,
+                # 是否使用点云开始和结束token
+                "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
+                # 投影隐藏层数量，默认为0
+                "use_max_pool": use_max_pool
+                # 是否使用最大池化
+            }
+            if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
+                # 如果投影隐藏层数量大于0
+                self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
+                # 添加投影隐藏层维度配置（是一个列表）
+            
+            logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
+            # 记录最大池化使用情况和点云token数量
+
+        self.init_point_proj()
+
+        self.fix_pointnet = False
+        # 设置是否固定PointNet的参数为False
+        # self.fix_llm = False
+        # # 设置是否固定LLM的参数为False
+        self.llm_train_type = "fix"
+        self.post_init()
+    
+    # def post_init(self):
+        # # 针对性初始化，避免与ImprovedMLPProjector冲突
+        # for name, module in self.named_modules():
+        #     # 跳过ImprovedMLPProjector内部的模块，它有自己的初始化
+        #     if 'point_proj' in name and isinstance(self.point_proj, ImprovedMLPProjector):
+        #         continue
+            
+        #     if isinstance(module, nn.Linear):
+        #         # 对于其他Linear层，根据激活函数选择合适的初始化
+        #         if hasattr(module, '_activation_type'):
+        #             if module._activation_type == 'gelu':
+        #                 nn.init.xavier_normal_(module.weight, gain=1.0)
+        #             else:
+        #                 nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+        #         else:
+        #             # 默认使用He初始化
+        #             nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                
+        #         if module.bias is not None:
+        #             nn.init.constant_(module.bias, 0)
         
-        logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
-        # 记录最大池化使用情况和点云token数量
-
-    def init_point2Qformer_proj(self, config):
-        pc_linear_layer = getattr(config, "point_2_Qformer_proj_layer", 2)
-        if pc_linear_layer == 1:
-            projection_layers = []
-            projection_layers.append(nn.Linear(self.point_backbone_config["backbone_output_dim"], 1408))
-            self.point_2_Qformer_proj = nn.Sequential(*projection_layers)
-        elif pc_linear_layer == 2:
-            self.point_2_Qformer_proj = nn.Sequential(
-                nn.Linear(self.point_backbone_config["backbone_output_dim"], 768),
-                nn.GELU(),
-                nn.Linear(768, 1408),
-            )
-        elif pc_linear_layer == 3:
-            self.point_2_Qformer_proj = nn.Sequential(
-                nn.Linear(self.point_backbone_config["backbone_output_dim"], 768),
-                nn.GELU(),
-                nn.Linear(768, 1152),
-                nn.GELU(),
-                nn.Linear(1152, 1408),
-            )
-
-      
-    def init_Qformer(self, num_query_token, vision_width, QFormer_lora_r,
-                     train_QFormer_norm, QFormer_lora_module):
-
-        encoder_config = BertConfig.from_pretrained("./checkpoints/Qwen2.5-VL-3B-Instruct-Point/bert-base-uncased")
-        # encoder_config = BertConfig.from_pretrained("bert-base-uncased")
-
-        encoder_config.encoder_width = vision_width
-        # insert cross-attention layer every other block
-        encoder_config.add_cross_attention = True
-        encoder_config.cross_attention_freq = 2
-        encoder_config.query_length = num_query_token
-        Qformer = BertLMHeadModel(config=encoder_config)
-        query_tokens = nn.Parameter(
-            torch.zeros(1, num_query_token, encoder_config.hidden_size) # 1x32x768
-        )
-        query_tokens.data.normal_(mean=0.0, std=encoder_config.initializer_range) # 0.02
-
-        Qformer.cls = None
-        Qformer.bert.embeddings.word_embeddings = None
-        Qformer.bert.embeddings.position_embeddings = None
-        for layer in Qformer.bert.encoder.layer:
-            layer.output = None
-            layer.intermediate = None
-
-
-        if QFormer_lora_r > 0:
-            lora_config = LoraConfig(
-                lora_alpha=QFormer_lora_r * 2,
-                lora_dropout=0.1,
-                r=QFormer_lora_r,
-                bias="none",
-                target_modules=QFormer_lora_module,
-            )
-
-            Qformer = inject_adapter_in_model(lora_config, Qformer)
-
-        self.Qformer = Qformer
-        self.query_tokens = query_tokens
-
-
-    def init_Qformer2token_proj(self):
-        self.Qformer2token_proj = nn.Sequential(
-            nn.Linear(self.Qformer.config.hidden_size, 1536), #self.Qformer.config.hidden_size=768
-            nn.GELU(),
-            nn.Linear(1536, 3072),
-            nn.GELU(),
-            nn.Linear(3072, 2560),
-            nn.GELU(),
-            nn.Linear(2560, self.config.hidden_size), # 2048
-        )
+    
+    def load_point_backbone_checkpoint(self, checkpoint_path=None):
+        # 加载点云骨干网络检查点的方法
+        self.point_backbone.load_checkpoint(self.config.point_backbone_ckpt if checkpoint_path is None else checkpoint_path)
+        # 加载检查点，如果没有指定路径则使用配置中的路径
 
     def forward(
         # 前向传播方法
@@ -278,52 +399,99 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                 point_features = self.point_backbone(point_clouds) # 16x513x384 BxLxC
                 # 直接通过点云骨干网络处理点云
 
-            pc_embeds = self.point_2_Qformer_proj(point_features)# 16x513x1408 BxLxC
-            pc_atts = torch.ones(pc_embeds.size()[:-1], dtype=torch.long).to(pc_embeds.device)
+                    # 16x513x384 -> 16x513x768 ：把point[:,0,:]接上去
+                    point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
 
-            query_tokens = self.query_tokens.expand(pc_embeds.shape[0], -1, -1)
-
-            # print("device:")
-            # print(query_tokens.device,pc_embeds.device,pc_atts.device)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=pc_embeds,
-                encoder_attention_mask=pc_atts,
-                return_dict=True,
-            ) # 16x32x768
-            point_features = self.Qformer2token_proj(query_output.last_hidden_state)# 16x32x2048 BxLxC
-            # 直接对点特征进行投影
+            if type(point_clouds) is list:
+                # 如果点云数据是列表类型
+                point_features = [self.point_proj(point_feature) for point_feature in point_features]
+                # 对每个点特征进行投影
+            else:
+                # 否则
+                # point_features = self.point_proj(point_features)# 16x513x2048 BxLxC
+                # 直接对点特征进行投影
+                origin = None
+                for i, layer in enumerate(self.point_proj):
+                    if i != 0:
+                        point_features = F.gelu(point_features)
+                    # point_features = layer(point_features) if i%2==1 or i==0 else layer(torch.cat((origin, point_features), dim=-1))
+                    point_features = layer(point_features) if i%2==1 or i<=3 else layer(origin + point_features) 
+                    if i == 1:
+                        origin = point_features
+                point_features = point_features + origin
+            # dummy_point_features = torch.zeros(point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype) # 513 x 384
+            # 创建虚拟点特征张量，用于保持计算图的连接
+            # dummy_point_features = self.point_proj(dummy_point_features) # 513x2048 LxC
+            # # 对虚拟点特征进行投影
+            # origin = dummy_point_features
+            # for i, layer in enumerate(self.point_proj):
+            #     if i != 0:
+            #         dummy_point_features = F.gelu(dummy_point_features)
+            #     dummy_point_features = layer(dummy_point_features) if i!=4 else layer(torch.cat((origin, dummy_point_features), dim=-1))
 
             new_input_embeds = []
             # 创建新的输入嵌入列表
             cur_point_idx = 0
             # 当前点云索引
             for cur_input_ids, cur_input_embeds in zip(input_ids, inputs_embeds): # * input_ids: B, L 16x575; input_embeds: B, L, C 16x575x2048
-                cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 32x2048 LxC
+                # 遍历每个样本的输入ID和输入嵌入 cur_input_ids: 575; cur_input_embeds: 575x2048
+                # if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
+                #     # 如果当前输入中没有点云补丁token
+                #     # multimodal LLM, but the current sample is not multimodal
+                #     # 多模态LLM，但当前样本不是多模态的
+                #     cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
+                #     # 添加虚拟点特征的零贡献，保持计算图连接
+                #     new_input_embeds.append(cur_input_embeds)
+                #     # 将当前输入嵌入添加到新列表中
+                #     cur_point_idx += 1
+                #     # 递增点云索引
+                #     continue
+                #     # 继续下一个样本
+                cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 513x2048 LxC
                 # # DEBUG
                 # cur_point_features = torch.cat((cur_point_features[0:1], cur_point_features[1:1+64]), dim=0)
-                num_patches = cur_point_features.shape[0]-2 # * number of point tokens 513(CLS + 512) # 32
-                # 获取点token的数量
 
-                if (cur_input_ids == point_backbone_config["point_start_token"]).sum() != (cur_input_ids == point_backbone_config["point_end_token"]).sum():
-                    # 如果点云开始token和结束token的数量不相等
-                    raise ValueError("The number of point start tokens and point end tokens should be the same.")
-                    # 抛出值错误异常
-                point_start_tokens = torch.where(cur_input_ids == point_backbone_config["point_start_token"])[0]
-                # print(point_start_tokens,cur_input_ids)
-                # 找到所有点云开始token的位置
-                for point_start_token_pos in point_start_tokens:
-                    # 遍历每个点云开始token的位置
-                    if cur_input_ids[point_start_token_pos + num_patches + 1] != point_backbone_config["point_end_token"]:
-                        # 如果点云结束token不在预期位置
-                        print(point_backbone_config["point_start_token"],point_backbone_config["point_end_token"],cur_input_ids[point_start_token_pos + num_patches + 1])
-                        raise ValueError("The point end token should follow the point start token.")
+                num_patches = cur_point_features.shape[0]-2 # * number of point tokens 513(CLS + 512)
+                # 获取点token的数量
+                if point_backbone_config['mm_use_point_start_end']:
+                    # 如果使用点云开始和结束token
+                    if (cur_input_ids == point_backbone_config["point_start_token"]).sum() != (cur_input_ids == point_backbone_config["point_end_token"]).sum():
+                        # 如果点云开始token和结束token的数量不相等
+                        raise ValueError("The number of point start tokens and point end tokens should be the same.")
                         # 抛出值错误异常
-                    cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches+2:]), dim=0)
+                    point_start_tokens = torch.where(cur_input_ids == point_backbone_config["point_start_token"])[0]
+                    # 找到所有点云开始token的位置
+                    for point_start_token_pos in point_start_tokens:
+                        # 遍历每个点云开始token的位置
+                        if cur_input_ids[point_start_token_pos + num_patches + 1] != point_backbone_config["point_end_token"]:
+                            # 如果点云结束token不在预期位置
+                            print(point_backbone_config["point_start_token"],point_backbone_config["point_end_token"],cur_input_ids[point_start_token_pos + num_patches + 1])
+                            raise ValueError("The point end token should follow the point start token.")
+                            # 抛出值错误异常
+                        cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 2:]), dim=0)
+                        cur_point_idx += 1
+                        # 递增点云索引
+                    new_input_embeds.append(cur_new_input_embeds)
+                    # 将新的输入嵌入添加到列表中
+                else:
+                    # 否则（不使用点云开始和结束token）
+                    if (cur_input_ids == point_backbone_config["point_patch_token"]).sum() != num_patches:
+                        # 如果点云补丁token的数量与点补丁数量不匹配
+                        raise ValueError("The number of point patch tokens should be the same as the number of point patches.")
+                        # 抛出值错误异常
+                    masked_indices = torch.where(cur_input_ids == point_backbone_config["point_patch_token"])[0]
+                    # 找到所有点云补丁token的位置
+                    mask_index_start = masked_indices[0]
+                    # 获取掩码开始位置
+                    if (masked_indices != torch.arange(mask_index_start, mask_index_start+num_patches, device=masked_indices.device, dtype=masked_indices.dtype)).any():
+                        # 如果点云补丁token不是连续的
+                        raise ValueError("The point patch tokens should be consecutive.")
+                        # 抛出值错误异常
+                    cur_new_input_embeds = torch.cat((cur_input_embeds[:mask_index_start], cur_point_features, cur_input_embeds[mask_index_start+num_patches:]), dim=0)
+                    new_input_embeds.append(cur_new_input_embeds)
+                    # 将新的输入嵌入添加到列表中
                     cur_point_idx += 1
-                    # 递增点云索引
-                new_input_embeds.append(cur_new_input_embeds)
-                # 将新的输入嵌入添加到列表中
+                    
                     # 递增点云索引
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
             # 将新的输入嵌入堆叠成张量
@@ -455,9 +623,9 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         hidden_states = outputs[0] # 16x593x2048
         # 获取隐藏状态
         logits = self.lm_head(hidden_states) # 16x593x151668
-        # 通过语言模型头部计算logits
-        # if self.config.text_config.n_extra_tokens > 0:
-        #     logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
+        # # 通过语言模型头部计算logits
+        if self.config.text_config.n_extra_tokens > 0:
+            logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
         # print(self.extra_lm_head,flush=True,file=sys.stderr)
         # print((hidden_states @ self.extra_lm_head.T).max(),flush=True,file=sys.stderr)
         # exit()

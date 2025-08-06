@@ -9,10 +9,10 @@ export LDFLAGS="-Wl,--no-as-needed -ldl -laio"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
 
-model_name_or_path=outputs/PointLLM_train_stage2_v2/PointLLM_train_stage2
+model_name_or_path=outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1
 data_path=data/objaverse_data
 anno_path=data/anno_data/PointLLM_complex_instruction_70K.json # or PointLLM_brief_description_660K.json (including val sets)
-output_dir=outputs/PointLLM_train_stage3/$filename
+output_dir=outputs/PointLLM_train_stage3_v2/$filename
 
 # PYTHONPATH=.:$PYTHONPATH \
 
@@ -39,15 +39,14 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --gradient_accumulation_steps 1 \
     --save_strategy "no" \
     --save_steps 2400 \
-    --stage 3 \
+    --stage 2 \
     --save_total_limit 1 \
-    --learning_rate 1e-5 \
+    --learning_rate 3e-5 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --bf16 True \
-    --llm_train_type lora \
     --gradient_checkpointing True \
     --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
     --conversation_types "detailed_description" "single_round" "multi_round" \
@@ -59,7 +58,11 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --seed 42 \
     --data_seed 42 \
     --run_name stage3-point_proj_llmlora_norm \
+    --llm_train_type lora \
     --train_norm True \
+    --train_point_proj True \
+    --train_point_backbone True \
+    --train_extra_embedding False \
     --lora_r 32 \
     --lora_alpha 64 \
     --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj

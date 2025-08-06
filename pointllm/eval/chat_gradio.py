@@ -45,18 +45,18 @@ def init_model(args):
     if "PointLLM_train_stage1" not in model_name:
         model = PeftModel.from_pretrained(model, model_name)
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
-    for name, param in model.named_parameters():
-        if "embed" in name or "lm_" in name:
-            print(f"Parameter {name} , id is {id(param)}")
+    # for name, param in model.named_parameters():
+        # if "embed" in name or "lm_" in name:
+        #     print(f"Parameter {name} , id is {id(param)}")
     
-    param = model.base_model.model.extra_lm_head
-    print(f"param: {param}, id is {id(param)}")
-    param = model.base_model.model.model.language_model.extra_embedding
-    print(f"param: {param}, id is {id(param)}")
-    param = model.base_model.model.model.language_model.embed_tokens.weight
-    print(f"param: {param}, id is {id(param)}")
-    param = model.base_model.model.lm_head.weight
-    print(f"param: {param}, id is {id(param)}")
+    # param = model.base_model.model.extra_lm_head
+    # print(f"param: {param}, id is {id(param)}")
+    # param = model.base_model.model.model.language_model.extra_embedding
+    # print(f"param: {param}, id is {id(param)}")
+    # param = model.base_model.model.model.language_model.embed_tokens.weight
+    # print(f"param: {param}, id is {id(param)}")
+    # param = model.base_model.model.lm_head.weight
+    # print(f"param: {param}, id is {id(param)}")
 
     model.eval()
 
@@ -179,7 +179,7 @@ def start_conversation(args, model, tokenizer, point_backbone_config, mm_use_poi
                         yaxis=dict(visible=False),
                         zaxis=dict(visible=False)
                     ),
-                    paper_bgcolor='rgb(255,255,255)'  # Set the background color to dark gray 50, 50, 50
+                    paper_bgcolor='rgb(240,248,255)'  # Set the background color to light blue to contrast with objects
                 ),
             )
 
@@ -211,7 +211,7 @@ def start_conversation(args, model, tokenizer, point_backbone_config, mm_use_poi
                 
                 if answer_time == 0:
                     if mm_use_point_start_end:
-                        qs = default_point_start_token + default_point_patch_token * point_token_len + default_point_end_token + '\n' + qs
+                        qs = "<|vision_start|>"+default_point_start_token + default_point_patch_token * (point_token_len-2) + default_point_end_token + "<|vision_end|>"+'\n' + qs
                     else:
                         qs = default_point_patch_token * point_token_len + '\n' + qs
 
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     # ! refer to https://www.gradio.app/guides/sharing-your-app#security-and-file-access
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-name", type=str, \
-         default="./outputs/PointLLM_train_stage3/PointLLM_train_stage3")
+         default="./outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1")
 
 
     parser.add_argument("--data_path", type=str, default="./data/objaverse_data", required=False)
@@ -396,7 +396,7 @@ if __name__ == "__main__":
     parser.add_argument("--tmp_dir", type=str, default="./working/tmp")
 
     # For gradio
-    parser.add_argument("--port", type=int, default=7820)
+    parser.add_argument("--port", type=int, default=7822)
 
     args = parser.parse_args()
     
