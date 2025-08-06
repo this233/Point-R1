@@ -277,7 +277,14 @@ def preprocess_v2(
                     # 只对assistant内容和结束标记计算损失
                     if content_start_token < total_len:
                         target[content_start_token:end_with_suffix_token] = input_ids[i][content_start_token:end_with_suffix_token]
-
+    # print("input_ids:",input_ids)
+    # # shape: torch.Size([16, 572])
+    # print("targets:",targets)
+    # # # shape: torch.Size([16, 572])
+    # print("input_ids.shape:",input_ids.shape)
+    # # shape: torch.Size([16, 572])
+    # print("targets.shape:",targets.shape)
+    # shape: torch.Size([16, 572])
     return dict(
         input_ids=input_ids,  # 输入token ID
         labels=targets,  # 标签
@@ -302,9 +309,9 @@ def preprocess_multimodal_point_cloud(
         for sentence in source:  # 遍历每句话
             replace_token = default_point_patch_token * point_token_len  # 构造替换token
             # # DEBUG
-            # replace_token = default_point_patch_token * (1+64)
+            replace_token = default_point_patch_token * (32-2)
             if point_backbone_config['mm_use_point_start_end']:  # 如果使用开始和结束token
-                replace_token = point_backbone_config['default_point_start_token'] + replace_token + point_backbone_config['default_point_end_token']
+                replace_token = "<|vision_start|>" + point_backbone_config['default_point_start_token'] + replace_token + point_backbone_config['default_point_end_token'] + "<|vision_end|>"
             sentence["value"] = sentence["value"].replace(point_indicator, replace_token)  # 替换点云指示符
 
     return sources

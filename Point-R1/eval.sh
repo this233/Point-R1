@@ -5,7 +5,7 @@ export OPENAI_API_BASE=https://api.gpt.ge/v1
 export TOKENIZERS_PARALLELISM=true
 export CUDA_VISIBLE_DEVICES=2 
 
-model_name=outputs/PointLLM_train_stage1_v6/PointLLM_train_stage1
+model_name=outputs/PointLLM_train_stage1_v9/PointLLM_train_stage1
 
 results_path=$model_name/evaluation/PointLLM_brief_description_val_200_GT_Objaverse_classification_prompt0.json
 
