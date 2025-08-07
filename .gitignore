@@ -197,3 +197,4 @@ data/modelnet40_data
 data/objaverse_data
 models
 image_data/
+outputs

@@ -343,10 +343,10 @@ if __name__ == "__main__":
 
     # 数据集相关参数
     parser.add_argument("--data_path", type=str, 
-        default="data/objaverse_data", required=False,
+        default="../data/objaverse_data", required=False,
         help="点云数据的路径")
     parser.add_argument("--anno_path", type=str, 
-        default="data/anno_data/PointLLM_brief_description_val_200_GT.json", required=False,
+        default="../data/anno_data/PointLLM_brief_description_val_200_GT.json", required=False,
         help="注释数据的路径")
     parser.add_argument("--pointnum", type=int, default=8192,
         help="每个点云中的点数量")

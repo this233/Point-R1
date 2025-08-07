@@ -289,7 +289,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
             "point_cloud_dim": point_bert_config.model.point_dims,
             # 点云维度
             # "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
-            "backbone_output_dim": point_bert_config.model.trans_dim*2,
+            "backbone_output_dim": point_bert_config.model.trans_dim*7,
             # 骨干网络输出维度，如果使用最大池化则维度翻倍
             "project_output_dim": self.config.hidden_size,
             # 投影输出维度，等于隐藏层大小
@@ -401,7 +401,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                 # 直接通过点云骨干网络处理点云
 
                 # 16x513x384 -> 16x513x768 ：把point[:,0,:]接上去
-                point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
+                # point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
 
             if type(point_clouds) is list:
                 # 如果点云数据是列表类型

@@ -222,7 +222,14 @@ def train():
         #     if name.startswith("query_expert_dict") or name.startswith("query_router"):
         #         tmp.pop(name)
         # model.get_model().language_model.load_state_dict(tmp, strict=False)
-
+    else:
+        model = Point_R1ForCausalLM.from_pretrained( 
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",  # 启用Flash Attention 2
+            # device_map="auto" # https://blog.gitcode.com/efce4e021ffded42cd16766125e1cd20.html 当使用device_map="auto"时，会干扰accelerate的分布式训练准备过程
+        )
     model.to(torch.bfloat16)
     print(model)
 

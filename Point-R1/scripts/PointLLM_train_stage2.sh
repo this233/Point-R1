@@ -56,7 +56,7 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --seed 42 \
     --data_seed 42 \
     --run_name stage2-point_proj_llmlora_norm_32 \
-    --llm_train_type lora \
+    --llm_train_type fix \
     --train_norm True \
     --train_point_proj True \
     --train_point_backbone True \
