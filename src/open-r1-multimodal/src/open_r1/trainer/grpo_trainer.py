@@ -65,7 +65,7 @@ from open_r1.vlm_modules.vlm_module import VLMBaseModule
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
-from open_r1.vlm_modules.qwen_module import PointCloudTokens
+from open_r1.model.pointllm import PointCloudTokens
 
 # effective_batch_size = (
 #             self.args.per_device_train_batch_size
@@ -287,6 +287,7 @@ class VLMGRPOTrainer(Trainer):
                         lora_module_names.remove(m)
                 return list(lora_module_names)
             target_modules = find_all_linear_names(model, self.vision_modules_keywords)
+            print(f"Target modules: {target_modules}")
             peft_config.target_modules = target_modules
             model = get_peft_model(model, peft_config)
 

@@ -1,3 +1,9 @@
+export OPENAI_API_KEY=siq3nBr8C75Pv89E0CQaKq4c3KTCpOREj8Umj8OMCM5ByKkBrHxm-IOPiLuFlEOjnU3HFE5Hv-sfLzShM8CCoA
+export OPENAI_API_BASE=https://api.modelarts-maas.com/v1/
+export GPT_TYPE=DeepSeek-V3
+export LLM_PARALLEL_WORKERS=64
+export WANDB_PROJECT="Point-R1"
+
 PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 export REPO_HOME="${PROJECT_ROOT}"
 echo "REPO_HOME: $REPO_HOME"
@@ -55,8 +61,8 @@ torchrun --nproc_per_node="4" \
     --save_steps 100 \
     --num_generations 8 \
     --max_completion_length 2048 \
-    --reward_funcs sbert_similarity simcse_similarity  format \
-    --beta 0.04 \
+    --reward_funcs simcse_similarity llm_classification format \
+    --beta 0.01 \
     --report_to wandb \
     --dataset-name this_is_not_used \
     --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero2.json \
@@ -66,6 +72,7 @@ torchrun --nproc_per_node="4" \
     --lora_alpha 128 \
     --lora_dropout 0.05 \
     --lora_task_type CAUSAL_LM \
-    --freeze_vision_modules true
+    --freeze_vision_modules true \
+    --max_steps 300
 
 echo "Training completed for ${EXP_NAME}"

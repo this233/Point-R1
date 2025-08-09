@@ -79,6 +79,114 @@ class Qwen2VLModule(VLMBaseModule):
         
         return rewards
 
+    @staticmethod
+    def _retry_with_backoff(func, initial_delay: float = 1.0, exponential_base: float = 2.0, jitter: bool = True, max_retries: int = 8, max_delay: float = 30.0):
+        def wrapper(*args, **kwargs):
+            import time, random
+            delay = initial_delay
+            attempts = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    attempts += 1
+                    if attempts > max_retries:
+                        raise e
+                    sleep_time = min(delay, max_delay) * (1 + (random.random() if jitter else 0))
+                    time.sleep(sleep_time)
+                    delay *= exponential_base
+        return wrapper
+
+    @staticmethod
+    def _get_open_free_form_cls_prompt():
+        return (
+            """Analyze two sentences and determine if they're referring to the same general object or concept, focusing on the type of object, not attributes such as color, size, or shape. Respond with 'T' if they refer to the same thing and 'F' if not. Also, provide a brief rationale (no more than 20 words) for your judgment.
+Example:
+Input: 1. Spiral staircase that goes from a ground floor. 2. This is a 3D model of wooden stairs in light brown
+Output: T#Both refer to a staircase.
+
+Now, analyze the following:
+Input: 1. {ground_truth} 2. {model_output}
+Output: """
+        )
+
+    @staticmethod
+    def llm_classification_reward(completions, solution, **kwargs):
+        """LLM-based open classification reward.
+        Uses an LLM to judge whether model output matches the ground-truth object description.
+        Returns 1.0 for 'T' and 0.0 for 'F' (invalid responses treated as 0.0).
+        """
+        import os, re, json
+        import requests
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Endpoint and credentials (reference: ModelArts MaaS chat/completions)
+        base_url = os.getenv("OPENAI_API_BASE", "https://api.modelarts-maas.com/v1")
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("OPENAI_API_KEY not set; returning zero rewards.")
+            return [0.0 for _ in completions]
+
+        model_name = os.getenv("GPT_TYPE", "deepseek-r1-250528")
+        prompt_tpl = Qwen2VLModule._get_open_free_form_cls_prompt()
+
+        contents = [completion[0]["content"] for completion in completions]
+        rewards = [0.0] * len(contents)
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {api_key}'
+        }
+
+        @Qwen2VLModule._retry_with_backoff
+        def chat_complete(messages):
+            payload = {
+                "model": model_name,
+                "messages": messages,
+                "stream": False,
+                "temperature": 0.3,
+                "top_p": 0.95,
+                "max_tokens": 1024,
+            }
+            resp = requests.post(url, headers=headers, data=json.dumps(payload), verify=False, timeout=60)
+            resp.raise_for_status()
+            return resp.json()
+
+        def process_one(index, content, sol):
+            try:
+                content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
+                model_output = content_match.group(1).strip() if content_match else content.strip()
+
+                sol_match = re.search(r'<answer>(.*?)</answer>', sol, re.DOTALL)
+                ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+
+                user_prompt = prompt_tpl.format(ground_truth=ground_truth, model_output=model_output)
+                messages = [{"role": "user", "content": user_prompt}]
+
+                resp = chat_complete(messages)
+                try:
+                    gpt_text = resp['choices'][0]['message']['content'].strip()
+                except Exception:
+                    gpt_text = ""
+
+                label = gpt_text[0].upper() if len(gpt_text) > 0 else 'F'
+                reward = 1.0 if label == 'T' else 0.0
+                return index, reward
+            except Exception as e:
+                print(f"Error in LLM classification reward (idx={index}): {e}")
+                return index, 0.0
+
+        max_workers = int(os.getenv("LLM_PARALLEL_WORKERS", "32"))
+        futures = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, (content, sol) in enumerate(zip(contents, solution)):
+                futures.append(executor.submit(process_one, idx, content, sol))
+            for fut in as_completed(futures):
+                idx, reward = fut.result()
+                rewards[idx] = reward
+
+        return rewards
     
         
     def get_vlm_key(self):
@@ -265,5 +373,7 @@ class Qwen2VLModule(VLMBaseModule):
             return Qwen2VLModule.sbert_similarity_reward
         elif func == "simcse_similarity":
             return Qwen2VLModule.simcse_similarity_reward
+        elif func == "llm_classification":
+            return Qwen2VLModule.llm_classification_reward
         else:
             raise ValueError(f"Unsupported reward function: {func}")
