@@ -55,8 +55,8 @@ def init_model(args):
     # # 初始化分词器和点云骨干网络配置
     # model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
     model = Point_R1ForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=False, use_cache=True).cuda()
-    if "PointLLM_train_stage1" not in model_name:
-        model = PeftModel.from_pretrained(model, model_name)
+    # if "PointLLM_train_stage1" not in model_name:
+    #     model = PeftModel.from_pretrained(model, model_name)
     model.initialize_tokenizer_point_backbone_config_wo_embedding(tokenizer)
     model.eval()
 
@@ -231,7 +231,7 @@ def start_generation(model, tokenizer, conv, dataloader, annos, prompt_index, ou
         object_ids = batch["object_ids"]  # 对象ID列表
 
         batchsize = len(object_ids)
-        print("!!!$$",batchsize)
+        # print("!!!$$",batchsize)
 
         # 复制input_ids以匹配批次大小
         input_ids = input_ids_.repeat(batchsize, 1)  # 形状为 B, L

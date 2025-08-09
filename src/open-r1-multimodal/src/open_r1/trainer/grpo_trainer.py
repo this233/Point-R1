@@ -65,6 +65,7 @@ from open_r1.vlm_modules.vlm_module import VLMBaseModule
 # rewards. When it's a string, it's a model ID, so it's loaded as a pretrained model.
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
+from open_r1.vlm_modules.qwen_module import PointCloudTokens
 
 # effective_batch_size = (
 #             self.args.per_device_train_batch_size
@@ -79,7 +80,6 @@ RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 #             repeat_count=self.num_iterations,
 #             seed=self.args.seed,
 #         )
-
 class RepeatRandomSampler(Sampler):
     """
     Sampler that repeats the indices of a dataset in a structured manner.
@@ -267,6 +267,7 @@ class VLMGRPOTrainer(Trainer):
         )
         model_cls = self.vlm_module.get_model_class(model_id, model_init_kwargs)
         model = model_cls.from_pretrained(model_id, **model_init_kwargs)
+        model.add_point_backbone_config(processing_class)
 
         # LoRA
         self.vision_modules_keywords = self.vlm_module.get_vision_modules_keywords()
@@ -289,20 +290,25 @@ class VLMGRPOTrainer(Trainer):
             peft_config.target_modules = target_modules
             model = get_peft_model(model, peft_config)
 
+
         # Freeze vision modules
         if freeze_vision_modules:
             print("Freezing vision modules...")
             for n, p in model.named_parameters():
                 if any(keyword in n for keyword in self.vision_modules_keywords):
                     p.requires_grad = False
-        # Compute the number of trainable parameters and print the parameter that is trainable
-        trainable_params = [p for p in model.parameters() if p.requires_grad]
-        total_params = sum(p.numel() for p in trainable_params)
-        # for n, p in model.named_parameters():
-        #     if p.requires_grad:
-        #         print(n, p.shape)
-        print(f"Total trainable parameters: {total_params}")
-        # Enable gradient checkpointing if requested
+  
+        print("#########################")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f"Parameter {name} will be updated. size: {param.size()}")
+            
+        num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total Number of trainable parameters: {num_trainable_params}")
+        print("#########################")
+        
+
+
         if args.gradient_checkpointing:
             model = self._enable_gradient_checkpointing(model, args)
 
@@ -388,7 +394,8 @@ class VLMGRPOTrainer(Trainer):
             max_new_tokens=self.max_completion_length,
             do_sample=True,  
             temperature=1,
-            pad_token_id=pad_token_id,
+            pad_token_id=processing_class.pad_token_id,
+            top_p=0.95
         )
         if hasattr(self.vlm_module, "get_eos_token_id"): # For InternVL
             self.generation_config.eos_token_id = self.vlm_module.get_eos_token_id(processing_class)
@@ -537,62 +544,41 @@ class VLMGRPOTrainer(Trainer):
     def _generate_and_score_completions(self, inputs: dict[str, Union[torch.Tensor, Any]], model) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
 
-        
         prompts = [x["prompt"] for x in inputs]
-        prompts_text = self.vlm_module.prepare_prompt(self.processing_class, inputs)
-        # Handle both pre-loaded images and image paths
-        images = []
+        prompts_text = []
         for x in inputs:
-            if "image" in x:
-                imgs = self._get_key_from_inputs(x, "image")
-            elif "image_path" in x and x["image_path"] is not None:
-                imgs = [PIL.Image.open(p) for p in self._get_key_from_inputs(x, "image_path")]
-            else:
-                imgs = []
+            for message in x["prompt"]:
+                if message['role'] == 'user':
+                    if type(message["content"]) == list:
+                        for i in range(len(message["content"])):
+                            message["content"][i]['text'] = message["content"][i]['text'].replace(PointCloudTokens.POINT_INDICATOR, PointCloudTokens.POINT_START + PointCloudTokens.POINT_PATCH * (PointCloudTokens.NUM_TOKENS-2)+PointCloudTokens.POINT_END)
+                    else:
+                        message["content"] = message["content"].replace(PointCloudTokens.POINT_INDICATOR, PointCloudTokens.POINT_START + PointCloudTokens.POINT_PATCH * (PointCloudTokens.NUM_TOKENS-2)+PointCloudTokens.POINT_END)
+            prompts_text.append(self.processing_class.apply_chat_template(
+                x["prompt"],
+                tokenize=False,  # 先不分词，只生成文本
+                continue_final_message=False,
+                add_generation_prompt=True,  # 不添加生成提示
+            ))
 
-            for img in imgs:
-                try:
-                    # Ensure minimum dimensions of 28 pixels
-                    w, h = img.size
-                    if w < 28 or h < 28:
-                    # Calculate new dimensions maintaining aspect ratio
-                        if w < h:
-                            new_w = 28
-                            new_h = int(h * (28/w))
-                        else:
-                            new_h = 28
-                            new_w = int(w * (28/h))
-                    img = img.resize((new_w, new_h), PIL.Image.Resampling.LANCZOS)
-                except:
-                    pass
-                images.append(img)
-                
-
-        prompt_inputs, additional_output = self.vlm_module.prepare_model_inputs(
-            self.processing_class, #Qwen2_5_VLProcessor(Qwen2VLImageProcessor+Qwen2TokenizerFast)
-            prompts_text, # [toenizer后的文本，多模态部分为<|vision_start|><|image_pad|><|vision_end|>]
-            images,# [PIL.JpegImagePlugin.JpegImageFile]
-            return_tensors="pt",
-            padding=True,
-            padding_side="left",
-            add_special_tokens=False,
-        ) # prompt_inputs={'input_ids':[[]]8x495,'attention_mask':[[]]8x495,'pixel_values':[[]]13248x1176,'image_grid_thw':[[1,36,46]*8]8x3}    additional_output=[{'image_grid_thw':[1,36,46]}*8]
+        prompt_inputs = self.processing_class(text=prompts_text,padding=True,padding_side="left",return_tensors="pt")
         prompt_inputs = super()._prepare_inputs(prompt_inputs) # 放到device上
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-
-        # image_grid_thw may be needed for the reward function
-        if additional_output is not None:
-            assert len(additional_output) == len(inputs)
-            for i, (input_i, additional_output_i) in enumerate(zip(inputs, additional_output)):
-                input_i.update(additional_output_i)
-
-                
+        # input_ids, attention_mask = prompt_inputs['input_ids'], prompt_inputs['attention_mask']
+        point_clouds = torch.stack([x["point_cloud"] for x in inputs]).to(torch.bfloat16)
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
             generate_returned_result = unwrapped_model.generate(
-                **{k: v for k, v in prompt_inputs.items() if k not in self.vlm_module.get_non_generate_params()}, 
-                generation_config=self.generation_config
+                input_ids=prompt_ids,
+                attention_mask=prompt_mask,
+                point_clouds=point_clouds,
+                do_sample=self.generation_config.do_sample,
+                temperature=self.generation_config.temperature,
+                top_k=self.generation_config.top_k,
+                max_new_tokens=self.generation_config.max_new_tokens,
+                top_p=self.generation_config.top_p
+                # generation_config=self.generation_config
             )
             prompt_length = prompt_ids.size(1)
             if not self.vlm_module.is_embeds_input():
@@ -616,8 +602,9 @@ class VLMGRPOTrainer(Trainer):
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
         # Get the multimodal inputs
-        multimodal_keywords = self.vlm_module.get_custom_multimodal_keywords() # ['pixel_values', 'image_grid_thw']
-        multimodal_inputs = {k: prompt_inputs[k] if k in prompt_inputs else None for k in multimodal_keywords}
+        # multimodal_keywords = self.vlm_module.get_custom_multimodal_keywords() # ['pixel_values', 'image_grid_thw']
+        # multimodal_inputs = {k: prompt_inputs[k] if k in prompt_inputs else None for k in multimodal_keywords}
+        multimodal_inputs = {"point_clouds": point_clouds}
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip its
             # computation here, and use per_token_logps.detach() instead.
@@ -786,6 +773,7 @@ class VLMGRPOTrainer(Trainer):
         clip_ratio = (is_clipped * completion_mask).sum() / completion_mask.sum()
         self._metrics["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
 
+        print(loss)
         return loss
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
@@ -855,7 +843,7 @@ class VLMGRPOTrainer(Trainer):
 
         model_card.save(os.path.join(self.args.output_dir, "README.md"))
 
-    def _get_train_sampler(self) -> Sampler:
+    def _get_train_sampler(self, train_dataset) -> Sampler:
         """Returns a sampler that ensures proper data sampling for GRPO training."""
         effective_batch_size = (
             self.args.per_device_train_batch_size
@@ -864,7 +852,7 @@ class VLMGRPOTrainer(Trainer):
         )
         
         return RepeatRandomSampler(
-            data_source=self.train_dataset,
+            data_source=train_dataset,
             mini_repeat_count=self.num_generations,
             batch_size=effective_batch_size // self.num_generations,
             repeat_count=self.num_iterations,

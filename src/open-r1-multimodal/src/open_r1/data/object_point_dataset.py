@@ -137,6 +137,24 @@ class ObjectPointCloudDataset(Dataset):  # 定义点云数据集类，继承自P
                 self.list_data_dict = self.list_data_dict[int(self.data_args.split_ratio * len(self.list_data_dict)):]  # 取后面部分数据作为验证集
                 print(f"Val set size: {len(self.list_data_dict)}")  # 打印验证集大小
 
+    @staticmethod
+    def get_question_template(task_type: str = "odLength"):
+        match task_type:
+            case "rec":
+                return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags. Output the final answer in JSON format."
+            case "ic":
+                return "{Question} First thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> json format answer here </answer>"
+            case "odLength":
+                SYSTEM_PROMPT = (
+                    #"A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant "
+                    "First thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning "
+                    "process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., "
+                    "<think> reasoning process here </think><answer> answer here </answer>"
+                )
+                return SYSTEM_PROMPT + '\n' + "{Question}"
+            case _:
+                return "{Question} First output the thinking process in <think> </think> tags and then output the final answer in <answer> </answer> tags."
+
     def _load_point_cloud(self, object_id, type='objaverse'):  # 定义加载点云的私有方法，接收对象ID和类型参数
         if type == 'objaverse':  # 如果类型为objaverse
             return self._load_objaverse_point_cloud(object_id)   # 调用加载objaverse点云的方法
@@ -169,56 +187,49 @@ class ObjectPointCloudDataset(Dataset):  # 定义点云数据集类，继承自P
             sources = [sources]  # 将数据源包装成列表
         assert len(sources) == 1, "sources should be a list"  # 断言数据源列表长度为1
         
+        object_id = sources[0]['object_id']
+
         # Get conversation data
         conversation = sources[0]['conversations']
-        object_id = sources[0]['object_id']
-        
         # Extract problem and solution from conversations
-        if len(conversation) >= 2:
-            problem = conversation[0]['value'].replace('<point>', '').strip()
-            solution = conversation[1]['value']
-        else:
-            problem = conversation[0]['value'].replace('<point>', '').strip()
-            solution = ""
+        assert len(conversation)==2, "conversation should be a list of length 2"
+        problem = conversation[0]['value'] #.replace('<point>', '').strip()
+        solution = conversation[1]['value']
         
-        # For GRPO trainer compatibility
-        if self.tokenizer is None:
-            # Return GRPO trainer compatible format
-            point_cloud_path = None
-            if self.point_indicator in sources[0]['conversations'][0]['value']:
-                # Construct point cloud file path
-                filename = f"{object_id}_{self.pointnum}.npy"
-                point_cloud_path = [os.path.join(self.data_path, filename)]
-            
-            # Default accu_reward_method
-            accu_reward_method = sources[0].get('accu_reward_method', 'default')
-            
-            # Create prompt structure for GRPO trainer
-            content = []
-            if point_cloud_path is not None:
-                # Add point cloud indicators (similar to image indicators)
-                content.extend([{'type': 'point', 'text': None} for _ in range(len(point_cloud_path))])
-            content.append({'type': 'text', 'text': f"Question: {problem}"})
-            
-            return {
-                'point_cloud_path': point_cloud_path,
-                'problem': problem,
-                'solution': f"<answer> {solution} </answer>" if solution else "",
-                'accu_reward_method': accu_reward_method,
-                'prompt': [{
-                    'role': 'user',
-                    'content': content
-                }],
-                'object_id': object_id
-            }
+        point_cloud_path = os.path.join(self.data_path, f"{object_id}_{self.pointnum}.npy")
+        
+        # # Default accu_reward_method
+        # accu_reward_method = sources[0].get('accu_reward_method', 'default')
+        
+        # Create prompt structure for GRPO trainer
+        content = []
+        # content.append({'type': 'point'})
+        content.append({'type': 'text', 'text': self.get_question_template().format(Question=problem)})
+        
+        point_cloud = self._load_point_cloud(object_id) # * N, C  # 加载点云数据，形状为N×C
+        if self.normalize_pc:  # 如果需要标准化点云
+            point_cloud = self.pc_norm(point_cloud) # * need to norm since point encoder is norm  # 标准化点云，因为点云编码器需要标准化数据
+
+        return {
+            'object_id': object_id,
+            'point_cloud_path': point_cloud_path,
+            'problem': problem,
+            'solution': f"<answer> {solution} </answer>" if solution else "",
+            # 'accu_reward_method': accu_reward_method,
+            'prompt': [{
+                'role': 'system',
+                'content': "You are an expert in 3D point cloud analysis. Your task is to analyze point cloud data and provide clear, concise answer to the question.\n\nWhen analyzing a point cloud, you should:\n- Identify the main object or structure represented by the points\n- Describe its key visual characteristics (shape, color, size, notable features)\n- Use simple, direct language that anyone can understand\n- Keep descriptions brief but informative (typically 1-2 sentences)\n\nYou can encounter various types of objects including but not limited to: vehicles, buildings, furniture, animals, characters, tools, electronic devices, and abstract shapes. Focus on what the object IS and its most distinctive visual features.\n"
+                },{
+                'role': 'user',
+                'content': content
+            }],
+            'point_cloud': torch.from_numpy(point_cloud.astype(np.float32))
+        }
         
         # Original processing for training (with tokenizer)
         if self.point_indicator in sources[0]['conversations'][0]['value']:
             # Point cloud representation  # 点云表示
-            point_cloud = self._load_point_cloud(object_id) # * N, C  # 加载点云数据，形状为N×C
-            if self.normalize_pc:  # 如果需要标准化点云
-                point_cloud = self.pc_norm(point_cloud) # * need to norm since point encoder is norm  # 标准化点云，因为点云编码器需要标准化数据
-
+            
             sources = preprocess_multimodal_point_cloud(  # 预处理多模态点云数据
                 copy.deepcopy([e["conversations"] for e in sources]), self.point_backbone_config, point_indicator=self.point_indicator)  # 深拷贝对话数据并处理
         else:  # 如果不包含点云指示符

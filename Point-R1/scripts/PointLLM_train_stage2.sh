@@ -9,8 +9,8 @@ export LDFLAGS="-Wl,--no-as-needed -ldl -laio"
 export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
 
 model_name_or_path=outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1
-data_path=data/objaverse_data
-anno_path=data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
+data_path=../data/objaverse_data
+anno_path=../data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
 output_dir=outputs/PointLLM_train_stage2_v7/$filename
 
 # PYTHONPATH=.:$PYTHONPATH \
@@ -21,12 +21,12 @@ export WANDB_PROJECT="Point-R1"
 # Set random seed for reproducibility
 export PYTHONHASHSEED=0
 
-export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
+# export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7
 
 # export MY_DEBUG=True
 # python pointllm/train/train_mem.py \
 # torchrun --nnodes=1 --nproc_per_node=2 --master_port=$master_port pointllm/train/train_mem.py \
-torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train/train_mem.py \
+torchrun --nnodes=1 --nproc_per_node=4 --master_port=$master_port pointllm/train/train_mem.py \
     --model_name_or_path $model_name_or_path \
     --data_path $data_path \
     --anno_path $anno_path \
@@ -35,12 +35,12 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --num_train_epochs 1 \
     --per_device_train_batch_size 6 \
     --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 4 \
     --save_strategy "no" \
     --save_steps 2400 \
     --stage 2 \
     --save_total_limit 1 \
-    --learning_rate 3e-4 \
+    --learning_rate 1e-4 \
     --weight_decay 0.05 \
     --warmup_ratio 0.1 \
     --lr_scheduler_type "cosine" \
@@ -56,11 +56,10 @@ torchrun --nnodes=1 --nproc_per_node=7 --master_port=$master_port pointllm/train
     --seed 42 \
     --data_seed 42 \
     --run_name stage2-point_proj_llmlora_norm_32 \
-    --llm_train_type fix \
+    --llm_train_type lora \
     --train_norm True \
     --train_point_proj True \
-    --train_point_backbone True \
-    --train_extra_embedding False \
+    --train_point_backbone False \
     --lora_r 128 \
     --lora_alpha 128 \
     --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj

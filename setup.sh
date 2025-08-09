@@ -23,3 +23,5 @@ pip install httpx[socks]
 
 pip install json_repair
 pip install peft
+pip install sentence_transformers
+pip install timm==1.0.13

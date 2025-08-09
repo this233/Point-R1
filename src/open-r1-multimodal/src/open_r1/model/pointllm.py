@@ -12,6 +12,11 @@ import torch.nn as nn
 # 导入PyTorch神经网络模块
 from torch.nn import CrossEntropyLoss
 # 导入交叉熵损失函数
+from open_r1.model.utils import *
+# 导入当前包下的utils模块中的所有函数和类
+# from pointllm.utils import *
+# 导入pointllm包下utils模块中的所有函数和类
+
 from transformers import LlamaConfig
 
 from contextlib import nullcontext
@@ -30,6 +35,7 @@ import os
 # 导入操作系统接口模块，用于文件路径操作
 
 import torch.nn.functional as F
+from peft import LoraConfig, inject_adapter_in_model
 
 # * add logger
 # 添加日志记录器
@@ -40,23 +46,44 @@ logger = logging.getLogger(__name__)
 # 设置为INFO级别
 logger.setLevel(logging.INFO)
 
+class PointCloudTokens:
+    """
+    Class containing special tokens for point cloud processing.
+    """
+    POINT_PATCH = "<|point_patch|>"
+    POINT_START = "<|point_start|>"
+    POINT_END = "<|point_end|>"
+    POINT_INDICATOR = "<point>"
+    NUM_TOKENS = 513
+    
+    @classmethod
+    def get_all_tokens(cls) -> list[str]:
+        """Return all point cloud special tokens as a list."""
+        return [cls.POINT_PATCH, cls.POINT_START, cls.POINT_END]
+    
+    @classmethod
+    def add_to_tokenizer(cls, tokenizer):
+        """Add point cloud special tokens to the tokenizer."""
+        tokenizer.add_tokens(cls.get_all_tokens(), special_tokens=True)
+
+
 class Point_R1TextConfig(Qwen2_5_VLTextConfig):
     # 定义PointLLM配置类，继承自Qwen2_5_VLConfig
     model_type = "point_r1_text"
     def __init__(self, 
-        DEFAULT_POINT_PATCH_TOKEN: str = "<point_patch>",
-        DEFAULT_POINT_START_TOKEN: str = "<point_start>",
-        DEFAULT_POINT_END_TOKEN: str = "<point_end>",
+        DEFAULT_POINT_PATCH_TOKEN: str = PointCloudTokens.POINT_PATCH,
+        DEFAULT_POINT_START_TOKEN: str = PointCloudTokens.POINT_START,
+        DEFAULT_POINT_END_TOKEN: str = PointCloudTokens.POINT_END,
         mm_use_point_start_end: bool = True,
-        n_extra_tokens: int = 3,
+        n_extra_tokens: int = PointCloudTokens.NUM_TOKENS,
         **kwargs
     ):
         super(Point_R1TextConfig, self).__init__(**kwargs)
         self.n_extra_tokens = n_extra_tokens
         self.mm_use_point_start_end = mm_use_point_start_end
-        self.DEFAULT_POINT_PATCH_TOKEN = DEFAULT_POINT_PATCH_TOKEN
-        self.DEFAULT_POINT_START_TOKEN = DEFAULT_POINT_START_TOKEN
-        self.DEFAULT_POINT_END_TOKEN = DEFAULT_POINT_END_TOKEN
+        self.DEFAULT_POINT_PATCH_TOKEN = PointCloudTokens.POINT_PATCH
+        self.DEFAULT_POINT_START_TOKEN = PointCloudTokens.POINT_START
+        self.DEFAULT_POINT_END_TOKEN = PointCloudTokens.POINT_END
 
 
 class Point_R1TextModel(Qwen2_5_VLTextModel):
@@ -73,28 +100,55 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         # 记录点云骨干网络输出维度
         logger.info(f"Use {self.point_backbone_config['projection_hidden_layer']} projection hiddent layers.")
         # 记录使用的投影隐藏层数量
+        
         if self.point_backbone_config['projection_hidden_layer'] > 0:
             # 如果投影隐藏层数量大于0
             # Add projection layer with linear layers and GELU activation
             # 添加带有线性层和GELU激活函数的投影层
-            projection_layers = []
+            # projection_layers = [nn.Linear(backbone_output_dim, self.point_backbone_config["projection_hidden_dim"][0])]\
+            #     +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) if i%2==1
+            #     else nn.Linear(backbone_output_dim + self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) for i in range(1,self.point_backbone_config["projection_hidden_layer"])]\
+            #     +[nn.Linear(backbone_output_dim + self.point_backbone_config["projection_hidden_dim"][-1], self.point_backbone_config["project_output_dim"])]
             # projection_layers.append(nn.LayerNorm(backbone_output_dim, eps=1e-5))
-            # 创建投影层列表
-            last_dim = backbone_output_dim
-            # 设置上一层的维度为骨干网络输出维度
-            for i in range(self.point_bert_config.model.projection_hidden_layer):
-                # 遍历每个投影隐藏层
-                projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["projection_hidden_dim"][i]))
-                # 添加线性层
-                projection_layers.append(nn.GELU())
-                # 添加GELU激活函数
-                last_dim = self.point_backbone_config["projection_hidden_dim"][i]
-                # 更新上一层维度
+            projection_layers = [nn.Linear(backbone_output_dim, self.point_backbone_config["projection_hidden_dim"][0])]\
+                +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][i-1], self.point_backbone_config["projection_hidden_dim"][i]) for i in range(1,self.point_backbone_config["projection_hidden_layer"])]\
+                +[nn.Linear(self.point_backbone_config["projection_hidden_dim"][-1], self.point_backbone_config["project_output_dim"])]
 
-            projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["project_output_dim"]))
-            # 添加最后的投影层
-            self.point_proj = nn.Sequential(*projection_layers)
+# origin = point_features
+#                 for i, layer in enumerate(self.point_proj):
+#                     if i != 0:
+#                         point_features = F.gelu(point_features)
+#                     point_features = layer(point_features) if i%2==1 or i==0 else layer(torch.cat((origin, point_features), dim=-1))
+
+
+            # # 创建投影层列表
+            # last_dim = backbone_output_dim
+            # # 设置上一层的维度为骨干网络输出维度
+            # for i in range(self.point_bert_config.model.projection_hidden_layer):
+            #     # 遍历每个投影隐藏层
+            #     projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["projection_hidden_dim"][i]))
+            #     # 添加线性层
+            #     projection_layers.append(nn.GELU())
+            #     # 添加GELU激活函数
+            #     last_dim = self.point_backbone_config["projection_hidden_dim"][i]
+            #     # 更新上一层维度
+
+            # projection_layers.append(nn.Linear(last_dim, self.point_backbone_config["project_output_dim"]))
+            # # 添加最后的投影层
+            # self.point_proj = nn.Sequential(*projection_layers)
+
+            self.point_proj = nn.ModuleList(projection_layers)
+
             # 创建顺序模型作为点云投影器
+            # self.point_proj = ImprovedMLPProjector(
+            #     input_dim=backbone_output_dim,
+            #     hidden_dims=self.point_backbone_config["projection_hidden_dim"], 
+            #     output_dim=self.point_backbone_config["project_output_dim"],
+            #     use_layer_norm=True,
+            #     use_residual=True,
+            #     dropout_rate=0.1,
+            #     activation='gelu'
+            # )
             logger.info(f"Each layer with {self.point_bert_config.model.projection_hidden_dim} hidden units.")
             # 记录每层的隐藏单元数量
         else:
@@ -110,71 +164,88 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
     def __init__(self, config: Point_R1TextConfig):
         # 初始化方法，接收LlamaConfig类型的配置参数
         super(Point_R1TextModel, self).__init__(config)
-        # 调用父类的初始化方法
-        # self.extra_embedding = nn.Parameter(torch.empty(config.hidden_size, config.hidden_size))
-        if config.n_extra_tokens > 0:
-            self.extra_embedding = nn.Parameter(torch.zeros(config.n_extra_tokens, config.hidden_size))
-        else:
-            self.extra_embedding = None
-        # print("id(self.extra_embedding)",id(self.extra_embedding),flush=True,file=sys.stderr)
-        
+
+        self.init_point_backbone(config)
+
+        # self.init_point2Qformer_proj(config)
+
+        # self.init_Qformer(
+        #     num_query_token=32, vision_width=1408,
+        #     QFormer_lora_r=config.QFormer_lora_r,
+        #     train_QFormer_norm=config.train_QFormer_norm,
+        #     QFormer_lora_module=config.QFormer_lora_module,
+        # )
+        # self.init_Qformer2token_proj()
+        self.init_point_proj()
+
+        self.fix_pointnet = False
+        self.llm_train_type = "fix"
+        self.post_init()
+    
+
+      
+    def init_point_backbone(self, config):
         self.point_backbone_type = config.point_backbone
         # 从配置中获取点云骨干网络类型
         logger.info(f"Using {self.point_backbone_type}.")
         # 记录使用的点云骨干网络类型
 
-        if self.point_backbone_type == "PointBERT":
-            # 如果点云骨干网络类型是PointBERT
-            from . import PointTransformer
-            # 导入PointTransformer模型
-            # address of config file, in the same dir of this file
-            # 配置文件地址，在当前文件的同一目录下
-            point_bert_config_name = getattr(config, "point_backbone_config_name", "PointTransformer_8192point_2layer") # * default for v1.2, v1.1 uses PointTransformer_base_8192point.yaml
-            # 获取PointBERT配置文件名，默认为v1.2版本的配置，v1.1版本使用不同的配置
-            point_bert_config_addr = os.path.join(os.path.dirname(__file__), "pointbert", f"{point_bert_config_name}.yaml")
-            # 构建PointBERT配置文件的完整路径
-            print(f"Loading PointBERT config from {point_bert_config_addr}.")
-            # 打印加载PointBERT配置文件的信息
-            point_bert_config = cfg_from_yaml_file(point_bert_config_addr)
-            self.point_bert_config = point_bert_config
-            # 从YAML文件中加载PointBERT配置
-            # print(point_bert_config,flush=True)
-            if getattr(config, "use_color", False):
-                # 如果配置中启用了颜色信息
-                point_bert_config.model.point_dims = 6
-                # 设置点的维度为6（包含XYZ坐标和RGB颜色）
-            use_max_pool = getattr(point_bert_config.model, "use_max_pool", False) # * default is false
-            # 获取是否使用最大池化的配置，默认为False
-            # print(point_bert_config,flush=True)
-            self.point_backbone = PointTransformer(point_bert_config.model, use_max_pool=use_max_pool)
-            # 创建PointTransformer骨干网络实例
-            logger.info(f"Using {self.point_backbone.point_dims} dim of points.")
-            # 记录使用的点云维度信息
+        # 如果点云骨干网络类型是PointBERT
+        from open_r1.model import PointTransformer
+        # 导入PointTransformer模型
+        # address of config file, in the same dir of this file
+        # 配置文件地址，在当前文件的同一目录下
+        point_bert_config_name = getattr(config, "point_backbone_config_name", "PointTransformer_8192point_2layer") # * default for v1.2, v1.1 uses PointTransformer_base_8192point.yaml
+        # 获取PointBERT配置文件名，默认为v1.2版本的配置，v1.1版本使用不同的配置
+        point_bert_config_addr = os.path.join(os.path.dirname(__file__), "pointbert", f"{point_bert_config_name}.yaml")
+        # 构建PointBERT配置文件的完整路径
+        print(f"Loading PointBERT config from {point_bert_config_addr}.")
+        # 打印加载PointBERT配置文件的信息
+        point_bert_config = cfg_from_yaml_file(point_bert_config_addr)
+        self.point_bert_config = point_bert_config
+        # 从YAML文件中加载PointBERT配置
+        # print(point_bert_config,flush=True)
+        if getattr(config, "use_color", False):
+            # 如果配置中启用了颜色信息
+            point_bert_config.model.point_dims = 6
+            # 设置点的维度为6（包含XYZ坐标和RGB颜色）
+        use_max_pool = getattr(point_bert_config.model, "use_max_pool", False) # * default is false
+        # 获取是否使用最大池化的配置，默认为False
+        # print(point_bert_config,flush=True)
+        self.point_backbone = PointTransformer(point_bert_config.model, use_max_pool=use_max_pool)
+        # 创建PointTransformer骨干网络实例
+        logger.info(f"Using {self.point_backbone.point_dims} dim of points.")
+        # 记录使用的点云维度信息
 
-            self.point_backbone_config = {
-                # 创建点云骨干网络配置字典
-                "point_cloud_dim": point_bert_config.model.point_dims,
-                # 点云维度
-                "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
-                # 骨干网络输出维度，如果使用最大池化则维度翻倍
-                "project_output_dim": self.config.hidden_size,
-                # 投影输出维度，等于隐藏层大小
-                "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
-                # 点云token长度，包含CLS token，如果使用最大池化则为1
-                "mm_use_point_start_end": self.config.mm_use_point_start_end,
-                # 是否使用点云开始和结束token
-                "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
-                # 投影隐藏层数量，默认为0
-                "use_max_pool": use_max_pool
-                # 是否使用最大池化
-            }
-            if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
-                # 如果投影隐藏层数量大于0
-                self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
-                # 添加投影隐藏层维度配置（是一个列表）
-            
-            logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
-            # 记录最大池化使用情况和点云token数量
+        self.point_backbone_config = {
+            # 创建点云骨干网络配置字典
+            "point_cloud_dim": point_bert_config.model.point_dims,
+            # 点云维度
+            # "backbone_output_dim": point_bert_config.model.trans_dim if not use_max_pool else point_bert_config.model.trans_dim * 2,
+            "backbone_output_dim": point_bert_config.model.trans_dim*7,
+            # 骨干网络输出维度，如果使用最大池化则维度翻倍
+            "project_output_dim": self.config.hidden_size,
+            # 投影输出维度，等于隐藏层大小
+            "point_token_len": point_bert_config.model.num_group + 1 if not use_max_pool else 1, # * number of output features, with cls token
+            # 点云token长度，包含CLS token，如果使用最大池化则为1
+            "mm_use_point_start_end": self.config.mm_use_point_start_end,
+            # 是否使用点云开始和结束token
+            "projection_hidden_layer": point_bert_config.model.get('projection_hidden_layer', 0),
+            # 投影隐藏层数量，默认为0
+            "use_max_pool": use_max_pool,
+            # 是否使用最大池化
+            'default_point_patch_token': config.DEFAULT_POINT_PATCH_TOKEN,
+            'default_point_start_token': config.DEFAULT_POINT_START_TOKEN,
+            'default_point_end_token': config.DEFAULT_POINT_END_TOKEN,
+        }
+        
+        if point_bert_config.model.get('projection_hidden_layer', 0) > 0:
+            # 如果投影隐藏层数量大于0
+            self.point_backbone_config["projection_hidden_dim"] = point_bert_config.model.projection_hidden_dim # a list
+            # 添加投影隐藏层维度配置（是一个列表）
+        
+        logger.info(f"Use max pool is {use_max_pool}. Number of point token is {self.point_backbone_config['point_token_len']}.")
+        # 记录最大池化使用情况和点云token数量
 
         self.init_point_proj()
 
@@ -184,6 +255,28 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         # # 设置是否固定LLM的参数为False
         self.llm_train_type = "fix"
         self.post_init()
+    
+    # def post_init(self):
+        # # 针对性初始化，避免与ImprovedMLPProjector冲突
+        # for name, module in self.named_modules():
+        #     # 跳过ImprovedMLPProjector内部的模块，它有自己的初始化
+        #     if 'point_proj' in name and isinstance(self.point_proj, ImprovedMLPProjector):
+        #         continue
+            
+        #     if isinstance(module, nn.Linear):
+        #         # 对于其他Linear层，根据激活函数选择合适的初始化
+        #         if hasattr(module, '_activation_type'):
+        #             if module._activation_type == 'gelu':
+        #                 nn.init.xavier_normal_(module.weight, gain=1.0)
+        #             else:
+        #                 nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+        #         else:
+        #             # 默认使用He初始化
+        #             nn.init.kaiming_normal_(module.weight, mode='fan_out', nonlinearity='relu')
+                
+        #         if module.bias is not None:
+        #             nn.init.constant_(module.bias, 0)
+        
     
     def load_point_backbone_checkpoint(self, checkpoint_path=None):
         # 加载点云骨干网络检查点的方法
@@ -214,13 +307,16 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         # 是否返回字典格式，可选的布尔值
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         # 返回类型为元组或带有过去状态的基础模型输出
-
+        # print("----")
+        # print(past_key_values,input_ids,len(past_key_values))
+        # if len(past_key_values) >0:
+        #     print("!!!$$",len(past_key_values[0]),past_key_values[0][0].shape)
         # HACK: replace back original embeddings for pretraining
         # 技巧：为预训练替换回原始嵌入
         if inputs_embeds is None:
             # 如果输入嵌入为None
-            # inputs_embeds = self.embed_tokens(input_ids)
-            inputs_embeds = F.embedding(input_ids, torch.cat((self.embed_tokens.weight, self.extra_embedding), dim=0))
+            inputs_embeds = self.embed_tokens(input_ids)
+            # inputs_embeds = F.embedding(input_ids, torch.cat((self.embed_tokens.weight, self.extra_embedding), dim=0))
             # 使用输入ID生成嵌入
 
         point_backbone = getattr(self, 'point_backbone', None)
@@ -228,7 +324,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
         point_backbone_config = getattr(self, 'point_backbone_config', None)
         # 获取点云骨干网络配置，如果不存在则返回None
 
-        if point_backbone is not None and (input_ids.shape[1] != 1 or self.training) and point_clouds is not None:
+        if point_backbone is not None and point_clouds is not None and input_ids.shape[1] != 1:
             # 如果点云骨干网络存在且（输入ID序列长度不为1或正在训练）且点云数据不为None
             # * enter when training or the first generation step of inference
             # 在训练时或推理的第一个生成步骤时进入
@@ -238,22 +334,11 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                     # 如果固定PointNet
                     self.point_backbone.eval()
                     # 设置点云骨干网络为评估模式
-                if type(point_clouds) is list:
-                    # 如果点云数据是列表类型
-                    # * variable numbers of points
-                    # 可变数量的点
-                    point_features = []
-                    # 创建点特征列表
-                    for point_cloud in point_clouds: # * iterate over batch
-                        # 遍历批次中的每个点云
-                        point_feature = self.point_backbone(point_cloud.unsqueeze(0))[0]
-                        # 通过点云骨干网络处理点云，获取特征
-                        point_features.append(point_feature)
-                        # 将特征添加到列表中
-                else:
-                    # 否则（点云数据是张量）
-                    point_features = self.point_backbone(point_clouds) # 16x513x384 BxLxC
-                    # 直接通过点云骨干网络处理点云
+                point_features = self.point_backbone(point_clouds) # 16x513x384 BxLxC
+                # 直接通过点云骨干网络处理点云
+
+                # 16x513x384 -> 16x513x768 ：把point[:,0,:]接上去
+                # point_features = torch.cat((point_features, point_features[:, 0:1, :].expand(-1, point_features.shape[1], -1)), dim=-1)
 
             if type(point_clouds) is list:
                 # 如果点云数据是列表类型
@@ -261,13 +346,26 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                 # 对每个点特征进行投影
             else:
                 # 否则
-                point_features = self.point_proj(point_features)# 16x513x2048 BxLxC
+                # point_features = self.point_proj(point_features)# 16x513x2048 BxLxC
                 # 直接对点特征进行投影
-
-            dummy_point_features = torch.zeros(point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype) # 513 x 384
+                origin = None
+                for i, layer in enumerate(self.point_proj):
+                    if i != 0:
+                        point_features = F.gelu(point_features)
+                    # point_features = layer(point_features) if i%2==1 or i==0 else layer(torch.cat((origin, point_features), dim=-1))
+                    point_features = layer(point_features) if i%2==1 or i<=3 else layer(origin + point_features) 
+                    if i == 1:
+                        origin = point_features
+                point_features = point_features + origin
+            # dummy_point_features = torch.zeros(point_backbone_config['point_token_len'], point_backbone_config['backbone_output_dim'], device=inputs_embeds.device, dtype=inputs_embeds.dtype) # 513 x 384
             # 创建虚拟点特征张量，用于保持计算图的连接
-            dummy_point_features = self.point_proj(dummy_point_features) # 513x2048 LxC
-            # 对虚拟点特征进行投影
+            # dummy_point_features = self.point_proj(dummy_point_features) # 513x2048 LxC
+            # # 对虚拟点特征进行投影
+            # origin = dummy_point_features
+            # for i, layer in enumerate(self.point_proj):
+            #     if i != 0:
+            #         dummy_point_features = F.gelu(dummy_point_features)
+            #     dummy_point_features = layer(dummy_point_features) if i!=4 else layer(torch.cat((origin, dummy_point_features), dim=-1))
 
             new_input_embeds = []
             # 创建新的输入嵌入列表
@@ -275,23 +373,24 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
             # 当前点云索引
             for cur_input_ids, cur_input_embeds in zip(input_ids, inputs_embeds): # * input_ids: B, L 16x575; input_embeds: B, L, C 16x575x2048
                 # 遍历每个样本的输入ID和输入嵌入 cur_input_ids: 575; cur_input_embeds: 575x2048
-                if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
-                    # 如果当前输入中没有点云补丁token
-                    # multimodal LLM, but the current sample is not multimodal
-                    # 多模态LLM，但当前样本不是多模态的
-                    cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
-                    # 添加虚拟点特征的零贡献，保持计算图连接
-                    new_input_embeds.append(cur_input_embeds)
-                    # 将当前输入嵌入添加到新列表中
-                    cur_point_idx += 1
-                    # 递增点云索引
-                    continue
-                    # 继续下一个样本
+                # if (cur_input_ids == point_backbone_config['point_patch_token']).sum() == 0:
+                #     # 如果当前输入中没有点云补丁token
+                #     # multimodal LLM, but the current sample is not multimodal
+                #     # 多模态LLM，但当前样本不是多模态的
+                #     cur_input_embeds = cur_input_embeds + (0. * dummy_point_features).sum() # * do nothing
+                #     # 添加虚拟点特征的零贡献，保持计算图连接
+                #     new_input_embeds.append(cur_input_embeds)
+                #     # 将当前输入嵌入添加到新列表中
+                #     cur_point_idx += 1
+                #     # 递增点云索引
+                #     continue
+                #     # 继续下一个样本
+                # print(cur_input_ids,point_backbone_config["point_start_token"])
                 cur_point_features = point_features[cur_point_idx].to(device=cur_input_embeds.device) # 513x2048 LxC
                 # # DEBUG
                 # cur_point_features = torch.cat((cur_point_features[0:1], cur_point_features[1:1+64]), dim=0)
 
-                num_patches = cur_point_features.shape[0] # * number of point tokens 513(CLS + 512)
+                num_patches = cur_point_features.shape[0]-2 # * number of point tokens 513(CLS + 512)
                 # 获取点token的数量
                 if point_backbone_config['mm_use_point_start_end']:
                     # 如果使用点云开始和结束token
@@ -308,7 +407,7 @@ class Point_R1TextModel(Qwen2_5_VLTextModel):
                             print(point_backbone_config["point_start_token"],point_backbone_config["point_end_token"],cur_input_ids[point_start_token_pos + num_patches + 1])
                             raise ValueError("The point end token should follow the point start token.")
                             # 抛出值错误异常
-                        cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos+1], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 1:]), dim=0)
+                        cur_new_input_embeds = torch.cat((cur_input_embeds[:point_start_token_pos], cur_point_features, cur_input_embeds[point_start_token_pos + num_patches + 2:]), dim=0)
                         cur_point_idx += 1
                         # 递增点云索引
                     new_input_embeds.append(cur_new_input_embeds)
@@ -386,10 +485,10 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         self.lm_head = nn.Linear(config.text_config.hidden_size, config.text_config.vocab_size, bias=False) # 2048 x 151936
         # 创建语言模型头部，用于生成词汇表大小的输出
 
-        if config.text_config.n_extra_tokens > 0:
-            self.extra_lm_head = self.model.language_model.extra_embedding
-        else:
-            self.extra_lm_head = None
+        # if config.text_config.n_extra_tokens > 0:
+        #     self.extra_lm_head = self.model.language_model.extra_embedding
+        # else:
+        #     self.extra_lm_head = None
         # Initialize weights and apply final processing
         # 初始化权重并应用最终处理
         self.post_init()
@@ -463,9 +562,9 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         hidden_states = outputs[0] # 16x593x2048
         # 获取隐藏状态
         logits = self.lm_head(hidden_states) # 16x593x151668
-        # 通过语言模型头部计算logits
-        if self.config.text_config.n_extra_tokens > 0:
-            logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
+        # # 通过语言模型头部计算logits
+        # if self.config.text_config.n_extra_tokens > 0:
+        #     logits = torch.cat((logits, hidden_states @ self.extra_lm_head.T), dim=-1)
         # print(self.extra_lm_head,flush=True,file=sys.stderr)
         # print((hidden_states @ self.extra_lm_head.T).max(),flush=True,file=sys.stderr)
         # exit()
@@ -480,13 +579,17 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
             # 移位logits，形状为（批次，长度-1，词汇表大小）
             shift_labels = labels[..., 1:].contiguous() # * B, L
             # 移位标签，形状为（批次，长度-1）
+            # print("shift_logits:",shift_logits.shape)
+            # print("shift_labels:",shift_labels.shape)
             
-            actual_vocab_size = self.lm_head.weight.shape[0] + self.config.text_config.n_extra_tokens
+            # actual_vocab_size = self.lm_head.weight.shape[0] + self.config.text_config.n_extra_tokens
+            actual_vocab_size = self.lm_head.weight.shape[0]
             # 由于添加token，或者其他因素，config中的vocab_size可能不准确
             # Flatten the tokens
             # 展平tokens
             loss_fct = CrossEntropyLoss()
             # 创建交叉熵损失函数
+            # print("actual_vocab_size:",actual_vocab_size)
             shift_logits = shift_logits.view(-1, actual_vocab_size)
             # 将logits重塑为（-1，词汇表大小）
             shift_labels = shift_labels.view(-1)
@@ -556,131 +659,140 @@ class Point_R1ForCausalLM(Qwen2_5_VLForConditionalGeneration):
         return model_inputs
         # 返回模型输入
 
-    def initialize_tokenizer_point_backbone_config_wo_embedding(self, tokenizer):
-        # 初始化分词器和点云骨干网络配置（不包含嵌入）的方法
-        # * called when stage2 or inference or inference without pre-training, assume tokenizer has point tokens
-        # 在阶段2或推理或无预训练推理时调用，假设分词器已有点token
-        config = self.config
-        # 获取配置
+    def add_point_backbone_config(self, tokenizer):
         point_backbone_config = self.get_model().language_model.point_backbone_config
-        # 获取点云骨干网络配置
-        mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
-        # 设置是否使用点云开始和结束token
+        # print("???",point_backbone_config['default_point_patch_token'],tokenizer.convert_tokens_to_ids([point_backbone_config['default_point_patch_token']]))
+        point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([point_backbone_config['default_point_patch_token']])[0]
+        point_backbone_config['point_start_token'] = tokenizer.convert_tokens_to_ids([point_backbone_config['default_point_start_token']])[0]
+        point_backbone_config['point_end_token'] = tokenizer.convert_tokens_to_ids([point_backbone_config['default_point_end_token']])[0]
 
-        default_point_patch_token = config.DEFAULT_POINT_PATCH_TOKEN
-        # 获取默认点云补丁token
 
-        tokenizer.add_tokens([default_point_patch_token], special_tokens=True)
-        # 向分词器添加点云补丁token
 
-        # * assert tokenizer has the default_point_patch_token
-        # 断言分词器拥有默认点云补丁token
-        point_backbone_config['default_point_patch_token'] = default_point_patch_token
-        # 设置默认点云补丁token
-        point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]
-        # 设置点云补丁token的ID
+    # def initialize_tokenizer_point_backbone_config(self, tokenizer):
+    #     # 初始化分词器和点云骨干网络配置（不包含嵌入）的方法
+    #     # * called when stage2 or inference or inference without pre-training, assume tokenizer has point tokens
+    #     # 在阶段2或推理或无预训练推理时调用，假设分词器已有点token
+    #     config = self.config
+    #     # 获取配置
+    #     point_backbone_config = self.get_model().language_model.point_backbone_config
+    #     # 获取点云骨干网络配置
+    #     mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
+    #     # 设置是否使用点云开始和结束token
 
-        if mm_use_point_start_end:
-            # 如果使用点云开始和结束token
-            default_point_start_token = config.DEFAULT_POINT_START_TOKEN
-            # 获取默认点云开始token
-            default_point_end_token = config.DEFAULT_POINT_END_TOKEN
-            # 获取默认点云结束token
-            tokenizer.add_tokens([default_point_start_token, default_point_end_token], special_tokens=True)
-            # 向分词器添加点云开始和结束token
+    #     default_point_patch_token = config.DEFAULT_POINT_PATCH_TOKEN
+    #     # 获取默认点云补丁token
 
-            point_backbone_config['default_point_start_token'] = default_point_start_token
-            # 设置默认点云开始token
-            point_backbone_config['default_point_end_token'] = default_point_end_token
-            # 设置默认点云结束token
+    #     tokenizer.add_tokens([default_point_patch_token], special_tokens=True)
+    #     # 向分词器添加点云补丁token
 
-            point_backbone_config["point_start_token"] = tokenizer.convert_tokens_to_ids([default_point_start_token])[0]
-            # 设置点云开始token的ID
-            point_backbone_config["point_end_token"] = tokenizer.convert_tokens_to_ids([default_point_end_token])[0]
-            # 设置点云结束token的ID
-        self.extra_lm_head = self.get_model().language_model.extra_embedding
+    #     # * assert tokenizer has the default_point_patch_token
+    #     # 断言分词器拥有默认点云补丁token
+    #     point_backbone_config['default_point_patch_token'] = default_point_patch_token
+    #     # 设置默认点云补丁token
+    #     point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]
+    #     # 设置点云补丁token的ID
+
+    #     if mm_use_point_start_end:
+    #         # 如果使用点云开始和结束token
+    #         default_point_start_token = config.DEFAULT_POINT_START_TOKEN
+    #         # 获取默认点云开始token
+    #         default_point_end_token = config.DEFAULT_POINT_END_TOKEN
+    #         # 获取默认点云结束token
+    #         tokenizer.add_tokens([default_point_start_token, default_point_end_token], special_tokens=True)
+    #         # 向分词器添加点云开始和结束token
+
+    #         point_backbone_config['default_point_start_token'] = default_point_start_token
+    #         # 设置默认点云开始token
+    #         point_backbone_config['default_point_end_token'] = default_point_end_token
+    #         # 设置默认点云结束token
+
+    #         point_backbone_config["point_start_token"] = tokenizer.convert_tokens_to_ids([default_point_start_token])[0]
+    #         # 设置点云开始token的ID
+    #         point_backbone_config["point_end_token"] = tokenizer.convert_tokens_to_ids([default_point_end_token])[0]
+    #         # 设置点云结束token的ID
+        # self.extra_lm_head = self.get_model().language_model.extra_embedding
     
-    def initialize_tokenizer_point_backbone_config(self, tokenizer, device):
-        # 初始化分词器和点云骨干网络配置的方法
-        # 初始len(tokenizer):151665 
-        # https://qwen.readthedocs.io/zh-cn/latest/getting_started/concepts.html
-        # https://github.com/wangxso/Qwen2/blob/main/tokenization_note_zh.md
-        # 初始embedding大小：[151936, 2048] 
-        # 151936的原因与内存计算效率有关（151643个普通token+3个特殊token+205 个 extra token=151851）（得是128的倍数，得到151936）
-        # https://github.com/QwenLM/Qwen/issues/482
+    # def initialize_tokenizer_point_backbone_config(self, tokenizer, device):
+    #     # 初始化分词器和点云骨干网络配置的方法
+    #     # 初始len(tokenizer):151665 
+    #     # https://qwen.readthedocs.io/zh-cn/latest/getting_started/concepts.html
+    #     # https://github.com/wangxso/Qwen2/blob/main/tokenization_note_zh.md
+    #     # 初始embedding大小：[151936, 2048] 
+    #     # 151936的原因与内存计算效率有关（151643个普通token+3个特殊token+205 个 extra token=151851）（得是128的倍数，得到151936）
+    #     # https://github.com/QwenLM/Qwen/issues/482
 
-        # print("initialize_tokenizer_point_backbone_config.",flush=True,file=sys.stderr)
-        # print("id(self.extra_lm_head)",id(self.extra_lm_head),flush=True,file=sys.stderr)
-        # print("id(self.get_model().language_model.extra_embedding)",id(self.get_model().language_model.extra_embedding),flush=True,file=sys.stderr)
-        self.resize_token_embeddings(len(tokenizer))
-        origin_tokenizer_len = len(tokenizer)
+    #     # print("initialize_tokenizer_point_backbone_config.",flush=True,file=sys.stderr)
+    #     # print("id(self.extra_lm_head)",id(self.extra_lm_head),flush=True,file=sys.stderr)
+    #     # print("id(self.get_model().language_model.extra_embedding)",id(self.get_model().language_model.extra_embedding),flush=True,file=sys.stderr)
+    #     self.resize_token_embeddings(len(tokenizer))
+    #     origin_tokenizer_len = len(tokenizer)
 
-        config = self.config
-        # 获取配置
-        point_backbone_config = self.get_model().language_model.point_backbone_config
-        # 获取点云骨干网络配置
-        mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
-        # 设置是否使用点云开始和结束token
+    #     config = self.config
+    #     # 获取配置
+    #     point_backbone_config = self.get_model().language_model.point_backbone_config
+    #     # 获取点云骨干网络配置
+    #     mm_use_point_start_end = point_backbone_config['mm_use_point_start_end'] = config.mm_use_point_start_end
+    #     # 设置是否使用点云开始和结束token
 
-        default_point_patch_token = config.DEFAULT_POINT_PATCH_TOKEN
-        # 获取默认点云补丁token
-        point_backbone_config['default_point_patch_token'] = default_point_patch_token
-        # 设置默认点云补丁token
-         # 151665
-        tokenizer.add_tokens([default_point_patch_token], special_tokens=True) # * no need to update embed since it will be replaced
-        # 向分词器添加点云补丁token，无需更新嵌入因为会被替换
-         # ! resize_token_embeddings will make the tokens trainable again
-        # 调整token嵌入大小，这会使token再次可训练
-        point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]
-        # 设置点云补丁token的ID
-        # self.resize_token_embeddings(len(tokenizer))
-        if mm_use_point_start_end:
-            # 如果使用点云开始和结束token
-            default_point_start_token = config.DEFAULT_POINT_START_TOKEN
-            # 获取默认点云开始token
-            default_point_end_token = config.DEFAULT_POINT_END_TOKEN
-            # 获取默认点云结束token
-            point_backbone_config['default_point_start_token'] = default_point_start_token
-            # 设置默认点云开始token
-            point_backbone_config['default_point_end_token'] = default_point_end_token
-            # 设置默认点云结束token
+    #     default_point_patch_token = config.DEFAULT_POINT_PATCH_TOKEN
+    #     # 获取默认点云补丁token
+    #     point_backbone_config['default_point_patch_token'] = default_point_patch_token
+    #     # 设置默认点云补丁token
+    #      # 151665
+    #     tokenizer.add_tokens([default_point_patch_token], special_tokens=True) # * no need to update embed since it will be replaced
+    #     # 向分词器添加点云补丁token，无需更新嵌入因为会被替换
+    #      # ! resize_token_embeddings will make the tokens trainable again
+    #     # 调整token嵌入大小，这会使token再次可训练
+    #     point_backbone_config['point_patch_token'] = tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]
+    #     # 设置点云补丁token的ID
+    #     # self.resize_token_embeddings(len(tokenizer))
+    #     if mm_use_point_start_end:
+    #         # 如果使用点云开始和结束token
+    #         default_point_start_token = config.DEFAULT_POINT_START_TOKEN
+    #         # 获取默认点云开始token
+    #         default_point_end_token = config.DEFAULT_POINT_END_TOKEN
+    #         # 获取默认点云结束token
+    #         point_backbone_config['default_point_start_token'] = default_point_start_token
+    #         # 设置默认点云开始token
+    #         point_backbone_config['default_point_end_token'] = default_point_end_token
+    #         # 设置默认点云结束token
 
-            num_new_tokens = tokenizer.add_tokens([default_point_start_token, default_point_end_token], special_tokens=True)
-            # 向分词器添加点云开始和结束token，返回新增token数量
-            # self.resize_token_embeddings(len(tokenizer))
-            # 调整token嵌入大小
-            point_backbone_config["point_start_token"] = tokenizer.convert_tokens_to_ids([default_point_start_token])[0]
-            # 设置点云开始token的ID
-            point_backbone_config["point_end_token"] = tokenizer.convert_tokens_to_ids([default_point_end_token])[0]
-            # 设置点云结束token的ID
+    #         num_new_tokens = tokenizer.add_tokens([default_point_start_token, default_point_end_token], special_tokens=True)
+    #         # 向分词器添加点云开始和结束token，返回新增token数量
+    #         # self.resize_token_embeddings(len(tokenizer))
+    #         # 调整token嵌入大小
+    #         point_backbone_config["point_start_token"] = tokenizer.convert_tokens_to_ids([default_point_start_token])[0]
+    #         # 设置点云开始token的ID
+    #         point_backbone_config["point_end_token"] = tokenizer.convert_tokens_to_ids([default_point_end_token])[0]
+    #         # 设置点云结束token的ID
 
-            if num_new_tokens > 0:
-                # 如果有新增token
-                input_embeddings = self.get_input_embeddings().weight
-                # 获取输入嵌入权重数据
-                extra_embedding = self.get_model().language_model.extra_embedding
+    #         if num_new_tokens > 0:
+    #             # 如果有新增token
+    #             input_embeddings = self.get_input_embeddings().weight
+    #             # 获取输入嵌入权重数据
+    #             extra_embedding = self.get_model().language_model.extra_embedding
 
-                point_cloud_start_tokens = tokenizer( "point start").input_ids
-                point_cloud_end_tokens = tokenizer("point end").input_ids
-                point_cloud_patch_tokens = tokenizer("point patch").input_ids
+    #             point_cloud_start_tokens = tokenizer( "point start").input_ids
+    #             point_cloud_end_tokens = tokenizer("point end").input_ids
+    #             point_cloud_patch_tokens = tokenizer("point patch").input_ids
 
-                point_cloud_start_embedding_avg = input_embeddings[point_cloud_start_tokens].mean(dim=0)
-                point_cloud_end_embedding_avg = input_embeddings[point_cloud_end_tokens].mean(dim=0)
-                point_cloud_patch_embedding_avg = input_embeddings[point_cloud_patch_tokens].mean(dim=0) 
-                with torch.no_grad():
-                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_start_token])[0]-origin_tokenizer_len] = point_cloud_start_embedding_avg.clone().detach()
-                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_end_token])[0]-origin_tokenizer_len] = point_cloud_end_embedding_avg.clone().detach()
-                    extra_embedding[tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]-origin_tokenizer_len] = point_cloud_patch_embedding_avg.clone().detach()
+    #             point_cloud_start_embedding_avg = input_embeddings[point_cloud_start_tokens].mean(dim=0)
+    #             point_cloud_end_embedding_avg = input_embeddings[point_cloud_end_tokens].mean(dim=0)
+    #             point_cloud_patch_embedding_avg = input_embeddings[point_cloud_patch_tokens].mean(dim=0) 
+    #             with torch.no_grad():
+    #                 extra_embedding[tokenizer.convert_tokens_to_ids([default_point_start_token])[0]-origin_tokenizer_len] = point_cloud_start_embedding_avg.clone().detach()
+    #                 extra_embedding[tokenizer.convert_tokens_to_ids([default_point_end_token])[0]-origin_tokenizer_len] = point_cloud_end_embedding_avg.clone().detach()
+    #                 extra_embedding[tokenizer.convert_tokens_to_ids([default_point_patch_token])[0]-origin_tokenizer_len] = point_cloud_patch_embedding_avg.clone().detach()
 
-                self.extra_lm_head = self.get_model().language_model.extra_embedding
+    #             self.extra_lm_head = self.get_model().language_model.extra_embedding
 
-                for p in self.get_input_embeddings().parameters():
-                    # 遍历输入嵌入的参数
-                    p.requires_grad = False
-                    # 设置为可训练
-                self.get_model().language_model.extra_embedding.requires_grad_(True)
-                print(f"Setting output embeddings fixed and {num_new_tokens} new tokens' input embeddings trainable.")
-        # exit()
+    #             for p in self.get_input_embeddings().parameters():
+    #                 # 遍历输入嵌入的参数
+    #                 p.requires_grad = False
+    #                 # 设置为可训练
+    #             self.get_model().language_model.extra_embedding.requires_grad_(True)
+    #             print(f"Setting output embeddings fixed and {num_new_tokens} new tokens' input embeddings trainable.")
+    #     # exit()
 
 AutoConfig.register("point_r1", Point_R1Config)
 # 注册PointLLM配置类到AutoConfig

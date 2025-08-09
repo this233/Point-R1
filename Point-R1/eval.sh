@@ -5,7 +5,7 @@ export OPENAI_API_BASE=https://api.vveai.com/v1
 export TOKENIZERS_PARALLELISM=true
 export CUDA_VISIBLE_DEVICES=2 
 
-model_name=outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1
+model_name=outputs/PointLLM_train_stage3_v5/PointLLM_train_stage3
 
 results_path=$model_name/evaluation/PointLLM_brief_description_val_200_GT_Objaverse_classification_prompt0.json
 

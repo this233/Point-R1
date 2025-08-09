@@ -40,7 +40,7 @@ from typing import Tuple
 from transformers.utils import logging
 from transformers import AutoProcessor, AutoTokenizer
 
-from openai import OpenAI
+# from openai import OpenAI
 
 
 from open_r1.data import ObjectPointCloudDataset, DataCollatorForPointTextDataset
@@ -49,21 +49,23 @@ from transformers import Qwen2VLProcessor,Qwen2Tokenizer
 
 logger = logging.get_logger(__name__)
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY", "sk-proj-1234567890"),
-    base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
-)
+# client = OpenAI(
+#     api_key=os.getenv("OPENAI_API_KEY", "sk-proj-1234567890"),
+#     base_url=os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+# )
 
-from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward, monkey_patch_torch_load
-monkey_patch_qwen2_5vl_flash_attn()    
-monkey_patch_torch_load()
+# from open_r1.qwen2_5vl_monkey_patch import monkey_patch_qwen2_5vl_flash_attn, monkey_patch_qwen2_5vl_forward, monkey_patch_torch_load
+# monkey_patch_qwen2_5vl_flash_attn()    
+# monkey_patch_torch_load()
 
 tokenizer = None
 
+from open_r1.model.pointllm import PointCloudTokens
 def initialize_tokenizer(model_path):
     global tokenizer
     if tokenizer is None:
         tokenizer = AutoTokenizer.from_pretrained(model_path)
+    PointCloudTokens.add_to_tokenizer(tokenizer)
     return tokenizer
 
 @dataclass
@@ -123,7 +125,7 @@ class GRPOScriptArguments(ScriptArguments):
     # 注释数据路径，如果为None则默认使用referit3d
     anno_path: str = field(default=None, metadata={"help": "Path to the utterance data. If None, will use referit3d by defautl."})
     # 是否使用颜色信息
-    use_color: bool = field(default=False, metadata={"help": "Whether to use color."})
+    use_color: bool = field(default=True, metadata={"help": "Whether to use color."})
     # 点云中点的数量
     pointnum: int = field(default=8192, metadata={"help": "Number of points."})
     
@@ -176,28 +178,29 @@ def extract_choice(text):
 
 def evaluate_answer_similarity(student_answer, ground_truth):
     """Use llm to evaluate answer similarity."""
-    try:
-        response = client.chat.completions.create(
-            model="qwen2.5:7b",
-            messages=[
-                {
-                    "role": "user",
-                    "content": "You are a evaluation expert. First, analyze the student's response to identify and extract their final answer. Then, compare the extracted answer with the correct solution. Output ONLY '1.0' if the extracted answer matches the correct solution in meaning, or '0.0' if the student's response does not contain a clear or correct answer. No other output is allowed."
-                },
-                {
-                    "role": "user",
-                    "content": f"Student's response: {student_answer}\nCorrect solution: {ground_truth}\nOutput only 1.0 or 0.0:"
-                }
-            ],
-            temperature=0
-        )
-        result = response.choices[0].message.content.strip()
-        return float(result)
+    pass
+    # try:
+    #     response = client.chat.completions.create(
+    #         model="qwen2.5:7b",
+    #         messages=[
+    #             {
+    #                 "role": "user",
+    #                 "content": "You are a evaluation expert. First, analyze the student's response to identify and extract their final answer. Then, compare the extracted answer with the correct solution. Output ONLY '1.0' if the extracted answer matches the correct solution in meaning, or '0.0' if the student's response does not contain a clear or correct answer. No other output is allowed."
+    #             },
+    #             {
+    #                 "role": "user",
+    #                 "content": f"Student's response: {student_answer}\nCorrect solution: {ground_truth}\nOutput only 1.0 or 0.0:"
+    #             }
+    #         ],
+    #         temperature=0
+    #     )
+    #     result = response.choices[0].message.content.strip()
+    #     return float(result)
     
-    except Exception as e:
-        print(f"Error in GPT evaluation: {e}")
-        # If API call fails, fall back to simple text matching
-        return 1.0 if student_answer ==ground_truth else 0.0
+    # except Exception as e:
+    #     print(f"Error in GPT evaluation: {e}")
+    #     # If API call fails, fall back to simple text matching
+    #     return 1.0 if student_answer ==ground_truth else 0.0
 
 def llm_reward(content, sol, **kwargs):
     # Extract answer from content if it has think/answer tags
@@ -932,12 +935,13 @@ SYSTEM_PROMPT = (
 
 
 def get_vlm_module(model_name_or_path):
-    if "qwen" in model_name_or_path.lower():
-        return Qwen2VLModule
-    elif "internvl" in model_name_or_path.lower():
-        return InvernVLModule
-    else:
-        raise ValueError(f"Unsupported model: {model_name_or_path}")
+    return Qwen2VLModule
+    # if "qwen" in model_name_or_path.lower():
+    #     return Qwen2VLModule
+    # elif "internvl" in model_name_or_path.lower():
+    #     return InvernVLModule
+    # else:
+    #     raise ValueError(f"Unsupported model: {model_name_or_path}")
 
 def main(script_args, training_args, model_args):
     # Load the VLM module
@@ -1048,7 +1052,11 @@ def main(script_args, training_args, model_args):
     #     splits['train'] = train_val_split['train']
     #     splits['validation'] = train_val_split['test']
 
-    data_collator = DataCollatorForPointTextDataset(tokenizer=tokenizer)
+    # Select trainer class based on vlm_trainer argument
+    trainer_cls = VLMGRPOTrainer
+    print("using trainer:", trainer_cls.__name__)
+    initialize_tokenizer(model_args.model_name_or_path)
+    # data_collator = DataCollatorForPointTextDataset(tokenizer=tokenizer)
     train_dataset = ObjectPointCloudDataset(  # 创建训练数据集对象
         split='train',  # 设置数据集分割类型为训练
         data_path=script_args.data_path,  # 设置数据路径
@@ -1058,10 +1066,6 @@ def main(script_args, training_args, model_args):
         tokenizer=tokenizer,  # 传入分词器
     )
 
-    # Select trainer class based on vlm_trainer argument
-    trainer_cls = VLMGRPOTrainer
-    print("using trainer:", trainer_cls.__name__)
-    initialize_tokenizer(model_args.model_name_or_path)
     # Initialize the GRPO trainer
     trainer = trainer_cls(
         model=model_args.model_name_or_path,
@@ -1069,7 +1073,7 @@ def main(script_args, training_args, model_args):
         args=training_args,
         vlm_module=vlm_module_cls(),
         train_dataset=train_dataset,
-        data_collator=data_collator,
+        # data_collator=data_collator,
         # train_dataset=splits['train'],
         # eval_dataset=splits.get('validation') if training_args.eval_strategy != "no" else None,
         peft_config=get_peft_config(model_args),
@@ -1078,13 +1082,14 @@ def main(script_args, training_args, model_args):
         max_pixels=script_args.max_pixels,
         min_pixels=script_args.min_pixels,
         max_anyres_num=script_args.max_anyres_num,
+        processing_class = tokenizer
     )
 
     # Train and push the model to the Hub
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+    # if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+    #     trainer.train(resume_from_checkpoint=True)
+    # else:
+    trainer.train()
 
     # Save and push to hub
     trainer.save_model(training_args.output_dir)

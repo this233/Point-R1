@@ -1,25 +1,97 @@
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2VLForConditionalGeneration, AutoProcessor
+from open_r1.model import Point_R1ForCausalLM, Point_R1Config
 from typing import Dict, Any, Union
 from trl.data_utils import maybe_apply_chat_template
 import torch
 from copy import deepcopy
 from open_r1.vlm_modules.vlm_module import VLMBaseModule
 from PIL import Image
+from transformers import AutoModel, AutoTokenizer
+from sentence_transformers import SentenceTransformer, util
+from scipy.spatial.distance import cosine
+
 
 class Qwen2VLModule(VLMBaseModule):
+    sbert_model = SentenceTransformer('/data/liweihong/code/Point-R1/checkpoints/Qwen2.5-VL-3B-Instruct-Point/all-mpnet-base-v2')
+    simcse_tokenizer = AutoTokenizer.from_pretrained("/data/liweihong/code/Point-R1/checkpoints/Qwen2.5-VL-3B-Instruct-Point/sup-simcse-roberta-large")
+    simcse_model = AutoModel.from_pretrained("/data/liweihong/code/Point-R1/checkpoints/Qwen2.5-VL-3B-Instruct-Point/sup-simcse-roberta-large")
+
     def __init__(self):
         super().__init__()
 
+    
+    @staticmethod
+    def sbert_similarity_reward(completions, solution, **kwargs):
+        """Calculate SBERT similarity reward between model output and ground truth."""
+        contents = [completion[0]["content"] for completion in completions]
+        rewards = []
+        
+        for content, sol in zip(contents, solution):
+            # Extract answer from content if it has think/answer tags
+            import re
+            content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
+            model_output = content_match.group(1).strip() if content_match else content.strip()
+            
+            # Extract answer from solution if it has think/answer tags
+            sol_match = re.search(r'<answer>(.*?)</answer>', sol, re.DOTALL)
+            ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+            
+            try:
+                embeddings = Qwen2VLModule.sbert_model.encode([ground_truth, model_output])
+                sbert_similarity = util.cos_sim(embeddings[0], embeddings[1])[0][0].item()
+                rewards.append(float(sbert_similarity))
+            except Exception as e:
+                print(f"Error in SBERT evaluation: {e}")
+                rewards.append(0.0)
+        
+        return rewards
+
+
+    @staticmethod
+    def simcse_similarity_reward(completions, solution, **kwargs):
+        """Calculate SimCSE similarity reward between model output and ground truth."""
+        contents = [completion[0]["content"] for completion in completions]
+        rewards = []
+        
+        for content, sol in zip(contents, solution):
+            # Extract answer from content if it has think/answer tags
+            import re
+            content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
+            model_output = content_match.group(1).strip() if content_match else content.strip()
+            
+            # Extract answer from solution if it has think/answer tags
+            sol_match = re.search(r'<answer>(.*?)</answer>', sol, re.DOTALL)
+            ground_truth = sol_match.group(1).strip() if sol_match else sol.strip()
+            
+            try:
+                inputs = Qwen2VLModule.simcse_tokenizer([ground_truth, model_output], padding=True, truncation=True, return_tensors="pt")
+
+                # Get the embeddings
+                with torch.no_grad():
+                    embeddings = Qwen2VLModule.simcse_model(**inputs, output_hidden_states=True, return_dict=True).pooler_output
+
+                # Calculate cosine similarity
+                simcse_similarity = 1 - cosine(embeddings[0], embeddings[1]) # * cosine actually calculates cosine distance, which is 1 - cosine similarity
+                rewards.append(float(simcse_similarity))
+            except Exception as e:
+                print(f"Error in SimCSE evaluation: {e}")
+                rewards.append(0.0)
+        
+        return rewards
+
+    
+        
     def get_vlm_key(self):
         return "qwen"
 
     def get_model_class(self, model_id: str, model_init_kwargs: dict):
-        if "Qwen2-VL" in model_id:
-            model_cls = Qwen2VLForConditionalGeneration
-        elif "Qwen2.5-VL" in model_id:
-            model_cls = Qwen2_5_VLForConditionalGeneration
-        else:
-            raise ValueError(f"Unsupported model: {model_id}")
+        model_cls = Point_R1ForCausalLM
+        # if "Qwen2-VL" in model_id:
+        #     model_cls = Qwen2VLForConditionalGeneration
+        # elif "Qwen2.5-VL" in model_id:
+        #     model_cls = Qwen2_5_VLForConditionalGeneration
+        # else:
+        #     raise ValueError(f"Unsupported model: {model_id}")
         return model_cls
     
     def post_model_init(self, model, processing_class):
@@ -189,5 +261,9 @@ class Qwen2VLModule(VLMBaseModule):
                     return Qwen2VLModule.format_reward_rec
                 case _:
                     raise ValueError(f"Unsupported reward function: {func}")
+        elif func == "sbert_similarity":
+            return Qwen2VLModule.sbert_similarity_reward
+        elif func == "simcse_similarity":
+            return Qwen2VLModule.simcse_similarity_reward
         else:
             raise ValueError(f"Unsupported reward function: {func}")

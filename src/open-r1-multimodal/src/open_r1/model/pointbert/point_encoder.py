@@ -93,9 +93,12 @@ class TransformerEncoder(nn.Module):
             for i in range(depth)])
 
     def forward(self, x, pos):
-        for _, block in enumerate(self.blocks):
+        ans = []
+        for i, block in enumerate(self.blocks):
             x = block(x + pos)
-        return x
+            if (i+1)%2 == 0:
+                ans.append(x)
+        return ans
 
 
 class PointTransformer(nn.Module):
@@ -144,19 +147,8 @@ class PointTransformer(nn.Module):
     def load_checkpoint(self, bert_ckpt_path):
         ckpt = torch.load(bert_ckpt_path, map_location='cpu')
         state_dict = OrderedDict()
-        
-        # 检查检查点中的键名，适配不同的检查点格式
-        if 'state_dict' in ckpt:
-            source_dict = ckpt['state_dict']
-        elif 'base_model' in ckpt:
-            source_dict = ckpt['base_model']
-        else:
-            # 如果检查点直接是state_dict格式
-            source_dict = ckpt
-            
-        for k, v in source_dict.items():
-            if k.startswith('module.point_encoder.'):
-                state_dict[k.replace('module.point_encoder.', '')] = v
+        for k, v in ckpt['base_model'].items():
+            state_dict[k] = v
 
         incompatible = self.load_state_dict(state_dict, strict=False)
 
@@ -191,8 +183,19 @@ class PointTransformer(nn.Module):
         x = torch.cat((cls_tokens, group_input_tokens), dim=1)
         pos = torch.cat((cls_pos, pos), dim=1)
         # transformer
-        x = self.blocks(x, pos)
-        x = self.norm(x) # * B, G + 1(cls token)(513), C(384)
+        ans = self.blocks(x, pos)
+        ans = [self.norm(x) for x in ans] # len=6, B, G + 1(cls token)(513), C(384)
+        # x = self.norm(x) # * B, G + 1(cls token)(513), C(384)
+        _cls = ans[-1][:, 0, :] # * B, C(384)
+        # ans = [x[:, 1:] for x in ans] # len=6, B, G, C(384)
+        
+        # 按照特征维度堆叠ans
+        stacked_features = torch.cat(ans, dim=-1) # B, G+1, C*6
+        
+        # 为每个token在特征维度上叠加_cls
+        expanded_cls = _cls.unsqueeze(1).expand(-1, stacked_features.size(1), -1) # B, G+1, C(384)
+        x = torch.cat([stacked_features, expanded_cls], dim=-1) # B, G+1, C*7
+        
         if not self.use_max_pool:
             return x
         concat_f = torch.cat([x[:, 0], x[:, 1:].max(1)[0]], dim=-1).unsqueeze(1) # * concat the cls token and max pool the features of different tokens, make it B, 1, C
