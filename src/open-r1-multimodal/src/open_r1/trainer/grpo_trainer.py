@@ -53,6 +53,7 @@ import PIL.Image
 import copy
 from torch.utils.data import Sampler
 import warnings
+import torch.distributed as dist
 
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
@@ -271,25 +272,26 @@ class VLMGRPOTrainer(Trainer):
 
         # LoRA
         self.vision_modules_keywords = self.vlm_module.get_vision_modules_keywords()
-        if peft_config is not None:
-            print("Applying LoRA...")
-            def find_all_linear_names(model, multimodal_keywords):
-                cls = torch.nn.Linear
-                lora_module_names = set()
-                for name, module in model.named_modules():
-                    # LoRA is not applied to the vision modules
-                    if any(mm_keyword in name for mm_keyword in multimodal_keywords):
-                        continue
-                    if isinstance(module, cls):
-                        lora_module_names.add(name)
-                for m in lora_module_names:  # needed for 16-bit
-                    if "embed_tokens" in m:
-                        lora_module_names.remove(m)
-                return list(lora_module_names)
-            target_modules = find_all_linear_names(model, self.vision_modules_keywords)
-            print(f"Target modules: {target_modules}")
-            peft_config.target_modules = target_modules
-            model = get_peft_model(model, peft_config)
+        
+        # if peft_config is not None:
+        #     print("Applying LoRA...")
+        #     def find_all_linear_names(model, multimodal_keywords):
+        #         cls = torch.nn.Linear
+        #         lora_module_names = set()
+        #         for name, module in model.named_modules():
+        #             # LoRA is not applied to the vision modules
+        #             if any(mm_keyword in name for mm_keyword in multimodal_keywords):
+        #                 continue
+        #             if isinstance(module, cls):
+        #                 lora_module_names.add(name)
+        #         for m in lora_module_names:  # needed for 16-bit
+        #             if "embed_tokens" in m:
+        #                 lora_module_names.remove(m)
+        #         return list(lora_module_names)
+        #     target_modules = find_all_linear_names(model, self.vision_modules_keywords)
+        #     print(f"Target modules: {target_modules}")
+        #     peft_config.target_modules = target_modules
+        #     model = get_peft_model(model, peft_config)
 
 
         # Freeze vision modules
@@ -299,6 +301,9 @@ class VLMGRPOTrainer(Trainer):
                 if any(keyword in n for keyword in self.vision_modules_keywords):
                     p.requires_grad = False
   
+        for n, p in model.named_parameters():
+            if "lora" in n:
+                p.requires_grad = True
         print("#########################")
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -410,6 +415,8 @@ class VLMGRPOTrainer(Trainer):
         self._step = 0
         # Buffer the batch to reuse generated outputs across multiple updates
         self._buffered_inputs = [None] * args.gradient_accumulation_steps
+        # Buffer to accumulate logging records across gradient accumulation microsteps
+        self._accum_logging_records: list = []
 
         # The trainer estimates the number of FLOPs (floating-point operations) using the number of elements in the
         # input tensor associated with the key "input_ids". However, in GRPO, the sampled data does not include the
@@ -570,17 +577,19 @@ class VLMGRPOTrainer(Trainer):
 
         # Generate completions
         with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
-            generate_returned_result = unwrapped_model.generate(
-                input_ids=prompt_ids,
-                attention_mask=prompt_mask,
-                point_clouds=point_clouds,
-                do_sample=self.generation_config.do_sample,
-                temperature=self.generation_config.temperature,
-                top_k=self.generation_config.top_k,
-                max_new_tokens=self.generation_config.max_new_tokens,
-                top_p=self.generation_config.top_p
-                # generation_config=self.generation_config
-            )
+            # 推理模式，避免梯度
+            with torch.inference_mode():
+                generate_returned_result = unwrapped_model.generate(
+                    input_ids=prompt_ids,
+                    attention_mask=prompt_mask,
+                    point_clouds=point_clouds,
+                    do_sample=self.generation_config.do_sample,
+                    temperature=self.generation_config.temperature,
+                    top_k=self.generation_config.top_k,
+                    max_new_tokens=self.generation_config.max_new_tokens,
+                    top_p=self.generation_config.top_p
+                    # generation_config=self.generation_config
+                )
             prompt_length = prompt_ids.size(1)
             if not self.vlm_module.is_embeds_input():
                 prompt_completion_ids = generate_returned_result
@@ -666,33 +675,132 @@ class VLMGRPOTrainer(Trainer):
                 output_reward_func = reward_func(prompts=prompts, completions=completions, **reward_kwargs)
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
+        # Prepare logging records; actual logging happens at the end of a gradient accumulation cycle
+        # Build reward function names
+        reward_func_names = []
+        for reward_func in self.reward_funcs:
+            if isinstance(reward_func, PreTrainedModel):
+                reward_func_names.append(reward_func.config._name_or_path.split("/")[-1])
+            else:
+                name = getattr(reward_func, "__name__", None)
+                reward_func_names.append(name if name is not None else str(reward_func))
+
+        # Ensure completions are plain text for logging
+        completion_texts = []
+        for c in completions:
+            if isinstance(c, list):
+                # Expected format: [[{"role": "assistant", "content": "..."}]]
+                try:
+                    completion_texts.append(c[0]["content"])  # type: ignore[index]
+                except Exception:
+                    completion_texts.append(str(c))
+            else:
+                completion_texts.append(c)
+
+        # Extract object_ids per example if available
+        object_ids = []
+        for ex in inputs:
+            oid = ex.get("object_id", None)
+            try:
+                object_ids.append(str(oid) if oid is not None else "")
+            except Exception:
+                object_ids.append("")
+        
+        global_steps = []
+        for ex in inputs:
+            global_steps.append(self.state.global_step)
+
+        # Extract ground truth per example if available
+        ground_truths = []
+        for ex in inputs:
+            gt = ex.get("ground_truth", None)
+            if gt is None:
+                gt = ex.get("solution", "")
+            try:
+                ground_truths.append(str(gt) if gt is not None else "")
+            except Exception:
+                ground_truths.append("")
+
+        local_rewards_list = rewards_per_func.detach().float().cpu().tolist()
+ 
         # Gather rewards across processes
         rewards_per_func = self.accelerator.gather(rewards_per_func)
-        
+          
+        # Validate grouping: ensure each group of size num_generations corresponds to the same object_id (and prompt)
+        # Gather object_ids and prompts across ranks in the same order as rewards_per_func
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            tmp_oids = [None for _ in range(world_size)]
+            tmp_prompts = [None for _ in range(world_size)]
+            dist.all_gather_object(tmp_oids, object_ids)
+            dist.all_gather_object(tmp_prompts, prompts_text)
+            global_object_ids = []
+            global_prompts_text = []
+            for lst in tmp_oids:
+                if lst:
+                    global_object_ids.extend(lst)
+            for lst in tmp_prompts:
+                if lst:
+                    global_prompts_text.extend(lst)
+        else:
+            global_object_ids = object_ids
+            global_prompts_text = prompts_text
+
+        mismatch_flag = 0
+        error_msg = None
+        total_items = len(global_object_ids)
+        if rewards_per_func.size(0) != total_items:
+            mismatch_flag = 1
+            error_msg = f"[GROUPCHECK] rewards_per_func size {rewards_per_func.size(0)} != items {total_items}."
+        elif total_items % self.num_generations != 0:
+            mismatch_flag = 1
+            error_msg = f"[GROUPCHECK] total items {total_items} not divisible by num_generations {self.num_generations}."
+        else:
+            for start in range(0, total_items, self.num_generations):
+                grp_oids = global_object_ids[start : start + self.num_generations]
+                if len(set(grp_oids)) != 1:
+                    mismatch_flag = 1
+                    if self.is_world_process_zero():
+                        grp_prompts = global_prompts_text[start : start + self.num_generations]
+                        print(f"[GROUPCHECK][ERROR] Grouping mismatch at index {start}: object_ids={grp_oids}")
+                        print(f"[GROUPCHECK][ERROR] Prompts in group: {grp_prompts}")
+                    error_msg = "Advantages grouping mismatch: a group does not correspond to the same object. Check sampler/sharding."
+                    break
+
+        if dist.is_available() and dist.is_initialized():
+            flag_tensor = torch.tensor(mismatch_flag, device=self.accelerator.device)
+            dist.all_reduce(flag_tensor, op=dist.ReduceOp.SUM)
+            mismatch_any = flag_tensor.item() > 0
+        else:
+            mismatch_any = mismatch_flag > 0
+
+        if mismatch_any:
+            raise RuntimeError(error_msg if error_msg is not None else "Advantages grouping mismatch detected.")
+
         # Sum the rewards from all reward functions
         rewards = rewards_per_func.sum(dim=1)
-        
+         
         # Compute grouped-wise rewards
         # Each group consists of num_generations completions for the same prompt
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
         std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
-        
+         
         # Normalize the rewards to compute the advantages
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
-        
+         
         # Get only the local slice of advantages
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
         )
         advantages = advantages[process_slice]
-
+ 
         # Log the metrics
         completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics["completion_length"].append(completion_length)
-
+ 
         reward_per_func = self.accelerator.gather_for_metrics(rewards_per_func).mean(0)
         for i, reward_func in enumerate(self.reward_funcs):
             if isinstance(reward_func, PreTrainedModel):
@@ -700,11 +808,11 @@ class VLMGRPOTrainer(Trainer):
             else:
                 reward_func_name = reward_func.__name__
             self._metrics[f"rewards/{reward_func_name}"].append(reward_per_func[i].item())
-
+ 
         self._metrics["reward"].append(self.accelerator.gather_for_metrics(rewards).mean().item())
-
+ 
         self._metrics["reward_std"].append(self.accelerator.gather_for_metrics(std_grouped_rewards).mean().item())
-
+ 
         return {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,
@@ -713,7 +821,17 @@ class VLMGRPOTrainer(Trainer):
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": ref_per_token_logps,
             "advantages": advantages,
-            "multimodal_inputs": multimodal_inputs
+            "multimodal_inputs": multimodal_inputs,
+            # Attach per-rank logging records so we can aggregate and log once per global step after grad accumulation
+            "logging_records": {
+                "prompts_text": prompts_text,
+                "completions_text": completion_texts,
+                "object_ids": object_ids,
+                "ground_truths": ground_truths,
+                "local_rewards_list": local_rewards_list,
+                "reward_func_names": reward_func_names,
+                "global_steps": global_steps,
+            },
         }
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -767,7 +885,8 @@ class VLMGRPOTrainer(Trainer):
             self._metrics["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
 
         # Compute final loss
-        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        # loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean()
+        loss = (per_token_loss * completion_mask).sum() / completion_mask.sum()
 
         # Log clip ratio
         is_clipped = (per_token_loss1 < per_token_loss2).float()
@@ -775,6 +894,157 @@ class VLMGRPOTrainer(Trainer):
         self._metrics["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
 
         print(loss)
+
+        # Accumulate logging records for this microstep
+        try:
+            if "logging_records" in inputs:
+                if not hasattr(self, "_accum_logging_records") or self._accum_logging_records is None:
+                    self._accum_logging_records = []
+                self._accum_logging_records.append(inputs["logging_records"])
+                try:
+                    micro_idx = self._step % self.args.gradient_accumulation_steps
+                    micro_idx = micro_idx if micro_idx != 0 else self.args.gradient_accumulation_steps
+                    appended_rows = len(inputs["logging_records"].get("prompts_text", []))
+                    num_rewards = len(inputs["logging_records"].get("reward_func_names", []))
+                    print(f"[LOGDEBUG] rank={self.accelerator.process_index} microstep={micro_idx}/{self.args.gradient_accumulation_steps} appended_rows={appended_rows} rewards={num_rewards}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Log prompt/completion/rewards table once per global step (end of gradient accumulation), aggregating all ranks
+        try:
+            is_last_microstep = (self._step % self.args.gradient_accumulation_steps) == 0
+            # print("??",self._step,self.args.gradient_accumulation_steps,is_last_microstep)
+            if is_last_microstep:
+                # Collect all microstep records accumulated during this optimizer step (every rank does this)
+                records_local_list = getattr(self, "_accum_logging_records", [])
+                if self.is_world_process_zero():
+                    try:
+                        local_rows = sum(len(r.get("prompts_text", [])) for r in records_local_list) if records_local_list else 0
+                        print(f"[LOGDEBUG] rank=0 preparing aggregation: local_microsteps={len(records_local_list)} local_rows={local_rows} global_step={int(self.state.global_step)}")
+                    except Exception:
+                        pass
+                gathered_records_lists = [records_local_list]
+                if dist.is_available() and dist.is_initialized():
+                    world_size = dist.get_world_size()
+                    tmp_list = [None for _ in range(world_size)]
+                    dist.all_gather_object(tmp_list, records_local_list)
+                    gathered_records_lists = tmp_list
+                    if self.is_world_process_zero():
+                        try:
+                            total_rows_all = 0
+                            for rec_list in gathered_records_lists:
+                                if rec_list:
+                                    total_rows_all += sum(len(r.get("prompts_text", [])) for r in rec_list)
+                            print(f"[LOGDEBUG] rank=0 gathered from world_size={world_size} total_rows_all_ranks={total_rows_all}")
+                        except Exception:
+                            pass
+ 
+                # Only rank 0 builds and logs the table
+                if (
+                    is_wandb_available()
+                    and ("wandb" in globals())
+                    and (wandb.run is not None)
+                    and self.is_world_process_zero()
+                ):
+                    # Concatenate across ranks
+                    all_object_ids = []
+                    all_prompts_text = []
+                    all_completions_text = []
+                    all_ground_truths = []
+                    all_local_rewards = []
+                    all_global_steps = []
+                    # Get reward function names from the first available record
+                    reward_func_names = None
+                    for rec_list in gathered_records_lists:
+                        if rec_list and len(rec_list) > 0:
+                            reward_func_names = rec_list[0]["reward_func_names"]
+                            break
+                    if reward_func_names is None:
+                        reward_func_names = []
+                    for rec_list in gathered_records_lists:
+                        if not rec_list:
+                            continue
+                        for rec in rec_list:
+                            all_object_ids.extend(rec["object_ids"])
+                            all_prompts_text.extend(rec["prompts_text"])
+                            all_completions_text.extend(rec["completions_text"])
+                            all_ground_truths.extend(rec["ground_truths"])
+                            all_local_rewards.extend(rec["local_rewards_list"])
+                            all_global_steps.extend(rec["global_steps"])
+ 
+                    reward_columns = [f"rewards/{n}" for n in reward_func_names]
+                    columns = [
+                        "global_step",
+                        "object_id",
+                        "prompt",
+                        "ground_truth",
+                        "completions",
+                    ] + reward_columns
+                    table = wandb.Table(columns=columns)
+ 
+                    global_step_value = int(self.state.global_step)
+                    try:
+                        print(f"[LOGDEBUG] rank=0 building table: columns={columns} rows={len(all_prompts_text)} step={global_step_value}")
+                    except Exception:
+                        pass
+                    # Aggregate per (object_id, prompt): collect list of completions and per-reward lists
+                    agg = {}
+                    for i in range(len(all_prompts_text)):
+                        key = (all_global_steps[i], all_object_ids[i])
+                        if key not in agg:
+                            agg[key] = {
+                                "global_step": all_global_steps[i],
+                                "object_id": all_object_ids[i],
+                                "prompt": all_prompts_text[i],
+                                "ground_truth": [],
+                                "completions": [],
+                                "rewards": {name: [] for name in reward_columns},
+                            }
+                        now_completions_text = "- **model:** "+all_completions_text[i]+"\n"+"- **ground_truth:** "+all_ground_truths[i]+"\n"+"- "
+                        for j, name in enumerate(reward_columns):
+                            agg[key]["rewards"][name].append(all_local_rewards[i][j])
+                            now_name = "llm" if "llm" in name else "format" if "format" in name else "sim"
+                            now_completions_text += f"**{now_name}**: {all_local_rewards[i][j]:.2f} "
+                        agg[key]["completions"].append(now_completions_text)
+                        agg[key]["ground_truth"].append(all_ground_truths[i])
+                        
+
+                    # Prepare and sort rows by (global_step, object_id, mean rewards/llm_classification_reward)
+                    rows_data = []
+                    for (_, _), entry in agg.items():
+                        row = [
+                            entry["global_step"],
+                            entry["object_id"],
+                            entry["prompt"],
+                            entry["ground_truth"],
+                            entry["completions"],
+                        ] + [entry["rewards"][name] for name in reward_columns]
+                        rows_data.append(row)
+                    try:
+                        target_col = "rewards/llm_classification_reward"
+                        if target_col in reward_columns:
+                            target_idx = columns.index(target_col)
+                            # Use mean value of the target reward list for sorting
+                            rows_data.sort(key=lambda r: (r[0], r[1], (sum(r[target_idx]) / max(len(r[target_idx]), 1)) if isinstance(r[target_idx], list) and len(r[target_idx]) > 0 else float("inf")))
+                        else:
+                            rows_data.sort(key=lambda r: (r[0], r[1]))
+                        print(f"[LOGDEBUG] rank=0 sorted rows by keys: (global_step, object_id{', '+target_col if target_col in reward_columns else ''})")
+                    except Exception:
+                        pass
+                    for row in rows_data:
+                        table.add_data(*row)
+ 
+                    wandb.log({"grpo/prompt_completion_table": table}, step=global_step_value)
+                    try:
+                        print(f"[LOGDEBUG] rank=0 wandb.log done: table_rows={len(all_prompts_text)} step={global_step_value}")
+                    except Exception:
+                        pass
+                # Clear buffer after logging on every rank
+                self._accum_logging_records = self._accum_logging_records[-10:]
+        except Exception:
+            pass
         return loss
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:

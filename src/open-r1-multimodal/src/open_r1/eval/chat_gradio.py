@@ -389,7 +389,7 @@ if __name__ == "__main__":
          default="./outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1")
 
 
-    parser.add_argument("--data_path", type=str, default="../data/objaverse_data", required=False)
+    parser.add_argument("--data_path", type=str, default="./data/objaverse_data", required=False)
     parser.add_argument("--pointnum", type=int, default=8192)
 
     parser.add_argument("--log_file", type=str, default="./working/serving_log.txt")

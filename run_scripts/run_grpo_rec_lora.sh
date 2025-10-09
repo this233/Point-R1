@@ -3,6 +3,7 @@ export OPENAI_API_BASE=https://api.modelarts-maas.com/v1/
 export GPT_TYPE=DeepSeek-V3
 export LLM_PARALLEL_WORKERS=64
 export WANDB_PROJECT="Point-R1"
+export WANDB_BASE_URL=https://api.wandb-cn.top
 
 PROJECT_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 export REPO_HOME="${PROJECT_ROOT}"
@@ -12,7 +13,8 @@ echo "REPO_HOME: $REPO_HOME"
 # image_folders="/data/liweihong/code/Point-R1/image_data:/data/liweihong/code/Point-R1/image_data:/data/liweihong/code/Point-R1/image_data"
 # model_path="/data/liweihong/code/Point-R1/models/Qwen2.5-VL-3B-Instruct"
 
-model_name_or_path=/data/liweihong/code/Point-R1/Point-R1/outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1
+# model_name_or_path=/data/liweihong/code/Point-R1/Point-R1/outputs/PointLLM_train_stage1_v2/PointLLM_train_stage1
+model_name_or_path=/data/liweihong/code/Point-R1/checkpoints/rl/Qwen2.5-VL-3B-Instruct-rec-lora/checkpoint-400
 data_path=/data/liweihong/code/Point-R1/data/objaverse_data
 anno_path=/data/liweihong/code/Point-R1/data/anno_data/PointLLM_brief_description_660K_filtered.json # or PointLLM_brief_description_660K.json (including val sets)
 
@@ -49,9 +51,10 @@ torchrun --nproc_per_node="4" \
     --anno_path $anno_path \
     --is_reward_customized_from_vlm_module $is_reward_customized_from_vlm_module \
     --task_type $TASK_TYPE \
-    --per_device_train_batch_size 8 \
-    --gradient_accumulation_steps 2 \
+    --per_device_train_batch_size 2 \
+    --gradient_accumulation_steps 8 \
     --gradient_checkpointing true \
+    --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
     --logging_steps 1 \
     --num_train_epochs 2 \
     --bf16 \
@@ -62,17 +65,19 @@ torchrun --nproc_per_node="4" \
     --num_generations 8 \
     --max_completion_length 2048 \
     --reward_funcs simcse_similarity llm_classification format \
-    --beta 0.01 \
+    --beta 0.00000001 \
     --report_to wandb \
     --dataset-name this_is_not_used \
     --deepspeed ${REPO_HOME}/src/open-r1-multimodal/local_scripts/zero2.json \
     --learning_rate 1e-5 \
     --use_peft true \
-    --lora_r 64 \
-    --lora_alpha 128 \
+    --lora_r 256 \
+    --lora_alpha 512 \
     --lora_dropout 0.05 \
     --lora_task_type CAUSAL_LM \
     --freeze_vision_modules true \
-    --max_steps 300
+    --lr_scheduler_type constant \
+    --num_iterations 1 \
+    # --max_steps 600
 
 echo "Training completed for ${EXP_NAME}"

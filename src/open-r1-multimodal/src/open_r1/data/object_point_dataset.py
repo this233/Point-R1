@@ -111,12 +111,21 @@ class ObjectPointCloudDataset(Dataset):  # 定义点云数据集类，继承自P
         # * these two ids have corrupted colored point files, so filter them when use_color is True  # 这两个ID的彩色点文件已损坏，所以当use_color为True时过滤它们
         filter_ids = ['6760e543e1d645d5aaacd3803bcae524', 'b91c0711149d460a8004f9c06d3b7f38'] if self.use_color else []  # 如果使用颜色则设置过滤ID列表，否则为空列表
 
-        # Iterate the list, filter those "conversation_type" not in self.conversation_types  # 遍历列表，过滤那些不在self.conversation_types中的对话类型
-        self.list_data_dict = [  # 重新赋值数据字典列表
-            data for data in self.list_data_dict   # 遍历原数据字典列表
-            if data.get('conversation_type', 'simple_description') in self.conversation_types   # 如果对话类型在允许的类型中
-            and data.get('object_id') not in filter_ids  # 且对象ID不在过滤ID列表中
+        # Iterate the list, filter those "converation_type" not in self.conversation_types  # 遍历列表，过滤那些不在self.conversation_types中的对话类型
+        self.list_data_dict = [
+            data for data in self.list_data_dict
+            if data.get('conversation_type', 'simple_description') in self.conversation_types
+            and data.get('object_id') not in filter_ids
+            # and (
+            #     isinstance(data.get("conversations"), list)
+            #     and len(data["conversations"]) > 1
+            #     and isinstance(data["conversations"][1], dict)
+            #     and isinstance(data["conversations"][1].get("value", ""), str)
+            #     and len(data["conversations"][1]["value"].split()) >= 10
+            # )
         ]
+
+        
 
         # * print after filtering  # 打印过滤后的信息
         print(f"After filtering, the dataset size is: {len(self.list_data_dict)}.")  # 打印过滤后数据集的大小
@@ -215,6 +224,7 @@ class ObjectPointCloudDataset(Dataset):  # 定义点云数据集类，继承自P
             'point_cloud_path': point_cloud_path,
             'problem': problem,
             'solution': f"<answer> {solution} </answer>" if solution else "",
+            'ground_truth': f"<answer> {solution} </answer>" if solution else "",
             # 'accu_reward_method': accu_reward_method,
             'prompt': [{
                 'role': 'system',

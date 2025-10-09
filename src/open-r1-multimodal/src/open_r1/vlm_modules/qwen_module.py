@@ -121,7 +121,7 @@ Output: """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         # Endpoint and credentials (reference: ModelArts MaaS chat/completions)
-        base_url = os.getenv("OPENAI_API_BASE", "https://api.modelarts-maas.com/v1")
+        base_url = os.getenv("OPENAI_API_BASE", "http://api.modelarts-maas.com/v1")
         url = f"{base_url.rstrip('/')}/chat/completions"
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -170,6 +170,9 @@ Output: """
                 except Exception:
                     gpt_text = ""
 
+                # 兼容大模型以“Output:”作为回答的开始
+                if gpt_text.lower().startswith("output:"):
+                    gpt_text = gpt_text[len("output:"):].strip()
                 label = gpt_text[0].upper() if len(gpt_text) > 0 else 'F'
                 reward = 1.0 if label == 'T' else 0.0
                 return index, reward
@@ -209,7 +212,7 @@ Output: """
         return AutoProcessor
     
     def get_vision_modules_keywords(self):  
-        return ['visual']
+        return ['visual',"point_backbone"]
     
     def get_custom_multimodal_keywords(self):
         return ['pixel_values', 'image_grid_thw']

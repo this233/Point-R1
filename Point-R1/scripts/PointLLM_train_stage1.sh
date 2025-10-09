@@ -62,7 +62,7 @@ torchrun --nnodes=1 --nproc_per_node=4 --master_port=$master_port pointllm/train
     --train_norm False \
     --train_point_proj True \
     --train_point_backbone False \
-    --max_steps 5000 \
+    --max_steps 5000
 
     # --evaluation_strategy "no" \
     # --max_grad_norm 1.0 \
