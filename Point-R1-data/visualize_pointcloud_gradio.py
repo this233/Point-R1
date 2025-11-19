@@ -259,8 +259,7 @@ def load_modelnet_pc(index=0, split='test', use_color=False, config_path=None, p
     try:
         # 使用默认配置文件路径
         if config_path is None or config_path == "":
-            config_path = os.path.join(os.path.dirname(__file__), 'dataloader', 'modelnet_config', 'ModelNet40.yaml')
-        
+            config_path = 'dataloader/modelnet_config/ModelNet40.yaml'
         if not os.path.exists(config_path):
             error_msg = f"警告: 配置文件不存在: {config_path}\n请手动指定 config_path 或确保 PointLLM 路径正确"
             print(error_msg)
