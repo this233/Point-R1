@@ -200,3 +200,13 @@ image_data/
 outputs
 
 working
+
+
+__pycache__/
+trash/
+checkpoints/
+data/
+.gradio/
+renders_o3d/
+*_intermediate_2d/
+*_features.npy
