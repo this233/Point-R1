@@ -35,8 +35,96 @@ class Open3DRenderer:
         self.renderer = rendering.OffscreenRenderer(self.width, self.height)
         self.scene = self.renderer.scene
         self.scene.set_background([1.0, 1.0, 1.0, 1.0])  # 白色背景
-        
+
     def load_model(self, glb_path):
+        """
+        加载GLB模型
+        """
+        model = o3d.io.read_triangle_model(glb_path)
+        if model is None or len(model.meshes) == 0:
+            raise ValueError(f"无法加载GLB文件或文件中没有mesh: {glb_path}")
+        return model
+        
+    def upload_model(self, model):
+        """
+        将模型加载到场景中（仅需执行一次）
+        """
+        if self.renderer is None:
+            self.setup()
+            
+        # 清空场景
+        self.scene.clear_geometry()
+        
+        # 添加mesh到场景
+        for mi in model.meshes:
+            mesh = mi.mesh
+            mat = model.materials[mi.material_idx]
+            self.scene.add_geometry(mi.mesh_name, mesh, mat)
+
+    def render_view(self, viewpoint, center=None, return_depth=True):
+        """
+        仅设置相机并渲染（假设模型已加载）
+        """
+        if self.renderer is None:
+            self.setup()
+
+        # 计算观察中心
+        # 注意：这里不再自动计算 bbox center，因为 model 不在参数里
+        # 如果 center 为 None，默认为原点，或者调用者必须提供
+        if center is None:
+             center = np.array([0, 0, 0])
+        
+        # 设置相机：显式使用针孔相机内参 + 外参
+        fov = 60.0
+        cam_params = {
+            "intrinsic": {
+                "width": self.width,
+                "height": self.height,
+                "fx": self.width / (2.0 * np.tan(np.radians(fov) / 2.0)),
+                "fy": self.height / (2.0 * np.tan(np.radians(fov) / 2.0)),
+                "cx": self.width / 2.0,
+                "cy": self.height / 2.0,
+                "fov": fov,
+            }
+        }
+        intrinsic = create_camera_intrinsic_from_params(cam_params)
+        extrinsic = create_camera_extrinsic_from_viewpoint(viewpoint, center=center)
+        
+        self.renderer.setup_camera(intrinsic, extrinsic)
+        
+        image = self.renderer.render_to_image()
+        img_array = np.asarray(image)[:, :, :3]  # (H, W, 3)
+        
+        depth = None
+        if return_depth:
+            depth_image = self.renderer.render_to_depth_image(z_in_view_space=True)
+            depth = np.asarray(depth_image)
+            depth = np.abs(depth)
+            depth[~np.isfinite(depth)] = 0
+            depth[depth > 1000] = 0
+        
+        return img_array, depth
+    
+    def render_with_depth(self, model, viewpoint, center=None, return_depth=True):
+        """
+        (旧接口兼容) 从指定视角渲染模型，返回图像和深度图
+        """
+        self.upload_model(model)
+        
+        # 如果 center 为空，计算模型中心
+        if center is None:
+            bbox = None
+            for mi in model.meshes:
+                mesh_bbox = mi.mesh.get_axis_aligned_bounding_box()
+                if bbox is None:
+                    bbox = mesh_bbox
+                else:
+                    min_bound = np.minimum(bbox.get_min_bound(), mesh_bbox.get_min_bound())
+                    max_bound = np.maximum(bbox.get_max_bound(), mesh_bbox.get_max_bound())
+                    bbox = o3d.geometry.AxisAlignedBoundingBox(min_bound, max_bound)
+            center = bbox.get_center()
+            
+        return self.render_view(viewpoint, center, return_depth)
         """
         加载GLB模型
         
@@ -195,8 +283,12 @@ class Open3DRenderer:
     
     def cleanup(self):
         """清理资源"""
-        if self.scene is not None:
-            self.scene.clear_geometry()
+        try:
+            if self.scene is not None:
+                self.scene.clear_geometry()
+        except Exception as e:
+            print(f"Warning: Error during cleanup (ignored): {e}")
+            
         self.renderer = None
         self.scene = None
 

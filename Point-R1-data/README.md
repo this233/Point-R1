@@ -1,3 +1,8 @@
+## TL;NR
+```
+export PYTHONPATH=/mnt/extra/Point-R1
+```
+
 ## 项目简介
 
 **Point-R1-data** 仓库主要用于：

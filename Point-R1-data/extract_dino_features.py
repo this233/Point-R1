@@ -743,7 +743,8 @@ def process_single_object(
     partition=5,
     radius=1.1,
     use_runtime_rendering=True,
-    depth_threshold=0.01
+    depth_threshold=0.01,
+    save_2d=True
 ):
     """
     处理单个对象：提取DINO特征、反投影、PCA可视化
@@ -761,6 +762,7 @@ def process_single_object(
         radius: 相机距离半径
         use_runtime_rendering: 是否使用运行时渲染（True：实时渲染，False：使用预渲染图像）
         depth_threshold: 深度阈值（用于可见性检测）
+        save_2d: 是否保存2D中间结果
     """
     print(f"\n处理对象: {object_id}")
     
@@ -939,12 +941,12 @@ def process_single_object(
     print("  初始化DINO模型...")
     # 默认使用DINOv3 ViT-L模型（与pca.ipynb一致）
     # dinov3_location = os.getenv("DINOV3_LOCATION", "facebookresearch/dinov3")
-    dinov3_location = "/mnt/extra/my_task/checkpoint/dinov3-vit7b16-pretrain-lvd1689m"
+    dinov3_location = "checkpoints/dinov3-vit7b16-pretrain-lvd1689m"
     
     # 检测可用的GPU数量
     if device == "cuda" and torch.cuda.is_available():
         num_available_gpus = torch.cuda.device_count()
-        num_gpus_to_use = min(4, num_available_gpus)  # 最多使用4个GPU（cuda:0到cuda:3）
+        num_gpus_to_use = min(7, num_available_gpus)  # 最多使用4个GPU（cuda:0到cuda:3）
         print(f"  检测到 {num_available_gpus} 个GPU，将使用 {num_gpus_to_use} 个GPU进行并行处理")
         
         # 多GPU模式：为每个GPU创建模型实例
@@ -990,18 +992,19 @@ def process_single_object(
     print(f"  实际patch数: {actual_num_patches}, 期望: {expected_num_patches}")
     
     # 5.5. 保存2D中间结果（渲染图、深度图、DINO特征PCA可视化）
-    save_2d_intermediate_results(
-        images,
-        depth_maps,
-        dino_features,
-        output_dir,
-        object_id,
-        points,
-        camera_intrinsics,
-        camera_extrinsics,
-        image_size=image_size,
-        patch_size=patch_size
-    )
+    if save_2d:
+        save_2d_intermediate_results(
+            images,
+            depth_maps,
+            dino_features,
+            output_dir,
+            object_id,
+            points,
+            camera_intrinsics,
+            camera_extrinsics,
+            image_size=image_size,
+            patch_size=patch_size
+        )
     
     # 6. 反投影特征到点云
     print("  反投影特征到点云...")
@@ -1061,6 +1064,10 @@ def main():
                        help='不使用运行时渲染，使用预渲染图像')
     parser.add_argument('--depth_threshold', type=float, default=0.05,
                        help='深度阈值（用于可见性检测）')
+    parser.add_argument('--save_2d', action='store_true', default=False,
+                       help='是否保存2D中间结果（默认True）')
+    parser.add_argument('--no_save_2d', dest='save_2d', action='store_false',
+                       help='不保存2D中间结果')
     
     args = parser.parse_args()
     
@@ -1086,7 +1093,8 @@ def main():
                 image_size=args.image_size,
                 patch_size=args.patch_size,
                 use_runtime_rendering=args.use_runtime_rendering,
-                depth_threshold=args.depth_threshold
+                depth_threshold=args.depth_threshold,
+                save_2d=args.save_2d
             )
         except Exception as e:
             print(f"✗ 处理失败 {obj_id}: {e}")
