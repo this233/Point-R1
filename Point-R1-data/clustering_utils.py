@@ -3,6 +3,7 @@ import numpy as np
 from sklearn.neighbors import kneighbors_graph
 from sklearn.cluster import AgglomerativeClustering
 from scipy.cluster.hierarchy import fcluster
+from scipy.sparse.csgraph import connected_components
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 
@@ -61,63 +62,120 @@ def perform_hierarchical_clustering(points, features, k_neighbors, betas):
     # 2. 构建空间约束图
     k = int(k_neighbors)
     # mode='connectivity' 返回 0/1 矩阵
+    print(f"Building KNN graph with K={k}...")
     connectivity = kneighbors_graph(points, n_neighbors=k, include_self=False)
     
-    # 3. 训练全树 (Full Tree)
-    # distance_threshold=0, n_clusters=None 强制构建完整的树
-    # 使用 Ward Linkage 以获得紧凑的聚类，解决"簇内差异大"问题
-    print(f"Computing clustering tree (Ward) with K={k} spatial constraints...")
-    model = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=0,
-        metric='euclidean',  # Ward requires euclidean
-        connectivity=connectivity,
-        linkage='ward',
-        compute_full_tree=True  # 确保计算完整的树用于提取 distances_
-    )
+    # 2.1 检查连通性
+    # 如果图不是连通的，AgglomerativeClustering 会尝试自动补全连接（并发出警告），或者需要分开处理。
+    # 用户明确要求不要自动连接，因此我们按连通分量分别聚类。
+    n_comps, comp_labels = connected_components(connectivity, directed=False)
     
-    try:
-        model.fit(normalized_features)
-    except Exception as e:
-        print(f"聚类构建失败: {e}")
-        return {i: np.arange(N) for i in range(len(betas))}
+    sub_results = [] # 存储每个分量的 (Z, mask)
+    global_max_dist = 0.0
+    
+    if n_comps > 1:
+        print(f"检测到 {n_comps} 个独立的连通分量。将分别进行聚类，保持分量间独立。")
         
-    # 4. 构建 Linkage Matrix
-    # 这样我们可以使用 scipy 的 fcluster 进行快速切割，无需重复 fit
-    Z = get_linkage_matrix(model, N)
-    
-    # 获取树的最大高度 (最大合并距离)
-    max_dist = Z[:, 2].max()
-    print(f"Tree max distance: {max_dist:.4f}")
+        for i in range(n_comps):
+            mask = comp_labels == i
+            n_sub = np.sum(mask)
+            if n_sub < 2: # 极少情况，孤立点
+                continue
+                
+            # 提取子集数据
+            sub_features = normalized_features[mask]
+            # 重新构建子集的 connectivity，因为切片稀疏矩阵可能会有问题且索引需要重置
+            # 注意：这里使用原始 points 的子集重新计算 KNN，确保图是干净的
+            sub_points = points[mask]
+            sub_connectivity = kneighbors_graph(sub_points, n_neighbors=min(k, n_sub-1), include_self=False)
+            
+            # 训练子树
+            try:
+                model = AgglomerativeClustering(
+                    n_clusters=None,
+                    distance_threshold=0,
+                    metric='euclidean',
+                    connectivity=sub_connectivity,
+                    linkage='ward',
+                    compute_full_tree=True
+                )
+                model.fit(sub_features)
+                
+                Z = get_linkage_matrix(model, n_sub)
+                current_max = Z[:, 2].max()
+                if current_max > global_max_dist:
+                    global_max_dist = current_max
+                    
+                sub_results.append({'mask': mask, 'Z': Z, 'n_samples': n_sub})
+                
+            except Exception as e:
+                print(f"分量 {i} 聚类失败: {e}")
+                # 即使失败，也可以当作所有点各自为一类，或者统一为一类，这里暂时跳过
+                
+    else:
+        # 只有一个分量，走标准流程
+        print(f"Computing clustering tree (Ward) with K={k} spatial constraints...")
+        try:
+            model = AgglomerativeClustering(
+                n_clusters=None,
+                distance_threshold=0,
+                metric='euclidean',
+                connectivity=connectivity,
+                linkage='ward',
+                compute_full_tree=True
+            )
+            model.fit(normalized_features)
+            Z = get_linkage_matrix(model, N)
+            global_max_dist = Z[:, 2].max()
+            sub_results.append({'mask': np.ones(N, dtype=bool), 'Z': Z, 'n_samples': N})
+            
+        except Exception as e:
+            print(f"聚类构建失败: {e}")
+            return {i: np.arange(N) for i in range(len(betas))}
+
+    print(f"Global Tree max distance: {global_max_dist:.4f}")
     
     clustering_results = {}
     
-    # 5. 根据相对阈值切割
+    # Level 0: 整体点云 (强制为一个 Cluster)
+    # 即使 KNN 导致物理不连通，逻辑上也视为一个整体
+    clustering_results[0] = np.zeros(N, dtype=int)
+    
+    # 5. 根据相对阈值切割并合并结果
     for idx, beta in enumerate(betas):
-        # Beta 是相似度 (0~1)，我们需要将其转换为距离阈值
-        # Beta=1.0 (最相似) -> Ratio=0.0 -> Threshold=0.0 (每个点一类)
-        # Beta=0.0 (最不相似) -> Ratio=1.0 -> Threshold=MaxDist (全合并)
-        # 
-        # 考虑到用户习惯，通常 Beta=0.9 希望是很细的聚类，Beta=0.3 是很粗的。
-        # 为了让控制更线性，我们可以直接用线性映射：
-        # Threshold = MaxDist * (1 - Beta)
-        # 但是为了防止 Beta=1 时阈值完全为0导致计算错误，加一个小 epsilon
-        
         threshold_ratio = 1.0 - beta
         if threshold_ratio < 1e-4: threshold_ratio = 1e-4
         
-        threshold = max_dist * threshold_ratio
+        threshold = global_max_dist * threshold_ratio
         
-        # 使用 fcluster 提取扁平聚类
-        labels = fcluster(Z, t=threshold, criterion='distance')
+        # 最终的标签数组
+        final_labels = np.zeros(N, dtype=int)
+        label_offset = 0
         
-        # fcluster 返回的标签是从 1 开始的，为了统一习惯改为从 0 开始
-        labels = labels - 1
+        # 遍历所有子树的结果
+        for res in sub_results:
+            Z = res['Z']
+            mask = res['mask']
+            
+            # 切割
+            sub_labels = fcluster(Z, t=threshold, criterion='distance')
+            
+            # fcluster 返回 1-based，转为 0-based
+            sub_labels = sub_labels - 1
+            
+            # 加上偏移量，确保不同分量的标签不冲突
+            final_labels[mask] = sub_labels + label_offset
+            
+            # 更新偏移量 (当前分量的最大标签 + 1)
+            if len(sub_labels) > 0:
+                label_offset += (sub_labels.max() + 1)
         
-        n_clusters = len(np.unique(labels))
-        print(f"  Level {idx+1}: Beta={beta:.2f} -> Thresh={threshold:.4f} (Ratio={threshold_ratio:.2f}) -> Clusters={n_clusters}")
+        n_clusters = len(np.unique(final_labels))
+        # Level 1, 2, 3, 4...
+        level_idx = idx + 1
+        print(f"  Level {level_idx}: Beta={beta:.2f} -> Thresh={threshold:.4f} -> Clusters={n_clusters}")
         
-        clustering_results[idx] = labels
+        clustering_results[level_idx] = final_labels
         
     return clustering_results
 

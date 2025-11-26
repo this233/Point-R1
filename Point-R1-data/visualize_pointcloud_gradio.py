@@ -377,7 +377,7 @@ def load_pca_pointcloud(ply_path, point_size=1.5):
         return None, error_msg
 
 
-def load_and_cluster_points(pc_path, feat_path, alpha, beta1, beta2, beta3, beta4, point_size=1.5):
+def load_and_cluster_points(pc_path, feat_path, k_neighbors, beta1, beta2, beta3, beta4, point_size=1.5):
     """
     加载点云和特征，执行聚类，并返回初始视图（层级1）
     同时返回状态数据供后续切换层级使用
@@ -425,13 +425,12 @@ def load_and_cluster_points(pc_path, feat_path, alpha, beta1, beta2, beta3, beta
         if points.shape[0] != features.shape[0]:
             return None, None, f"错误: 点云数量 ({points.shape[0]}) 与特征数量 ({features.shape[0]}) 不匹配"
             
-        # UI 传递过来的是 "Alpha"，现在我们将其解释为 KNN 的 K 值
-        k_neighbors = int(10 + alpha * 500) # alpha=0.02 -> k=20, alpha=0.05 -> k=35
-        if k_neighbors < 5: k_neighbors = 5
-        if k_neighbors > 100: k_neighbors = 100
+        # 直接使用 UI 传递的 K 值
+        k_neighbors = int(k_neighbors)
+        if k_neighbors < 1: k_neighbors = 1
         
         print(f"开始聚类计算... Points: {points.shape}, Features: {features.shape}")
-        print(f"K-Neighbors: {k_neighbors} (from alpha={alpha}), Betas: {[beta1, beta2, beta3, beta4]}")
+        print(f"K-Neighbors: {k_neighbors}, Betas: {[beta1, beta2, beta3, beta4]}")
         
         # 2. 执行聚类
         betas = [beta1, beta2, beta3, beta4]
@@ -474,8 +473,8 @@ def update_cluster_view(state_data, level_name):
     point_size = state_data.get('point_size', 1.5)
     
     # 解析层级索引
-    level_map = {"层级 1": 0, "层级 2": 1, "层级 3": 2, "层级 4": 3}
-    level_idx = level_map.get(level_name, 0)
+    level_map = {"层级 0": 0, "层级 1": 1, "层级 2": 2, "层级 3": 3, "层级 4": 4}
+    level_idx = level_map.get(level_name, 1) # 默认 Level 1
     
     labels = clustering_results.get(level_idx)
     if labels is None:
@@ -823,8 +822,8 @@ def render_cluster_contour(state_data, glb_path, cluster_id_input, level_name, a
     print(f"DEBUG: points shape: {points.shape}")
     
     # 解析层级和 Cluster ID
-    level_map = {"层级 1": 0, "层级 2": 1, "层级 3": 2, "层级 4": 3}
-    level_idx = level_map.get(level_name, 0)
+    level_map = {"层级 0": 0, "层级 1": 1, "层级 2": 2, "层级 3": 3, "层级 4": 4}
+    level_idx = level_map.get(level_name, 1)
     labels = clustering_results.get(level_idx)
     print(f"DEBUG: level_idx: {level_idx}")
     
@@ -874,14 +873,14 @@ def render_cluster_contour(state_data, glb_path, cluster_id_input, level_name, a
                 # 如果父簇点数 > 子簇点数，说明找到了包含关系的父簇
                 if len(parent_indices) > len(cluster_indices):
                     parent_points = points[parent_indices]
-                    msg_suffix += f", Parent ID: {parent_cluster_id} (Level {current_search_level+1})"
-                    print(f"DEBUG: Found valid Parent ID: {parent_cluster_id} at Level {current_search_level+1}, points: {parent_points.shape[0]}")
+                    msg_suffix += f", Parent ID: {parent_cluster_id} (Level {current_search_level})"
+                    print(f"DEBUG: Found valid Parent ID: {parent_cluster_id} at Level {current_search_level}, points: {parent_points.shape[0]}")
                     break
                 else:
-                    print(f"DEBUG: Parent {parent_cluster_id} at Level {current_search_level+1} size {len(parent_indices)} == Child, skipping...")
+                    print(f"DEBUG: Parent {parent_cluster_id} at Level {current_search_level} size {len(parent_indices)} == Child, skipping...")
                     current_search_level -= 1
             else:
-                print(f"DEBUG: No labels for Level {current_search_level+1}")
+                print(f"DEBUG: No labels for Level {current_search_level}")
                 break
         
         if parent_points is None:
@@ -1002,29 +1001,29 @@ def find_children_group(clustering_results, parent_level_idx, parent_id):
         return None, None, f"Parent ID {parent_id} is empty"
         
     # Traverse down levels to find split
-    max_level = 3 # 0, 1, 2, 3
+    max_level = 4 # 0, 1, 2, 3, 4
     
-    print(f"DEBUG: Searching children for Parent {parent_id} (Level {parent_level_idx+1})...")
+    print(f"DEBUG: Searching children for Parent {parent_id} (Level {parent_level_idx})...")
     
     for lvl in range(parent_level_idx + 1, max_level + 1):
         child_labels = clustering_results.get(lvl)
         if child_labels is None: 
-            print(f"DEBUG: Level {lvl+1} data missing.")
+            print(f"DEBUG: Level {lvl} data missing.")
             break
         
         # Get labels for the parent's points at this level
         current_labels = child_labels[parent_indices]
         unique_children = np.unique(current_labels)
         
-        print(f"DEBUG:  - Checking Level {lvl+1}: Found {len(unique_children)} children ids: {unique_children}")
+        print(f"DEBUG:  - Checking Level {lvl}: Found {len(unique_children)} children ids: {unique_children}")
 
         # If we found more than 1 child (split happened), return immediately
         if len(unique_children) > 1:
-            return lvl, unique_children, f"Found split at Level {lvl+1} ({len(unique_children)} children)"
+            return lvl, unique_children, f"Found split at Level {lvl} ({len(unique_children)} children)"
             
         # If we are at the last level, we have to return whatever we have
         if lvl == max_level:
-            msg = f"Reached bottom Level {lvl+1} with no split (Single child structure)."
+            msg = f"Reached bottom Level {lvl} with no split (Single child structure)."
             print(f"DEBUG: {msg}")
             return lvl, unique_children, msg
             
@@ -1196,8 +1195,8 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
     """
     if state_data is None: return [None]*12 + ["Please calculate clustering first"]
     
-    level_map = {"层级 1": 0, "层级 2": 1, "层级 3": 2, "层级 4": 3}
-    parent_level_idx = level_map.get(parent_level_name, 0)
+    level_map = {"层级 0": 0, "层级 1": 1, "层级 2": 2, "层级 3": 3, "层级 4": 4}
+    parent_level_idx = level_map.get(parent_level_name, 1)
     
     points = state_data['points']
     clustering_results = state_data['clustering_results']
@@ -1423,8 +1422,8 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
         # --- Quality Check & Filtering ---
         # Thresholds (Stricter based on user request for high quality)
         # Overlap threshold tightened to ensure full masks are clearly distinguished
-        MAX_ALLOWED_OVERLAP = 0.2   # Reject if overlap > 25%
-        MIN_ALLOWED_VISIBILITY = 0.18 # Reject if vis < 20%
+        MAX_ALLOWED_OVERLAP = 0.25   # Reject if overlap > 25%
+        MIN_ALLOWED_VISIBILITY = 0.3 # Reject if vis < 20%
         MIN_CHILD_VISIBILITY = 0.75   # Reject if < 60% of children are visible
         
         valid_candidates = []
@@ -1449,7 +1448,7 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
             
             is_distinct = True
             for selected in final_views:
-                if np.dot(cand['direction'], selected['direction']) > 0.8: # Threshold for distinctness (Was 0.7=45deg, Now 0.9=25deg)
+                if np.dot(cand['direction'], selected['direction']) > 0.7: # Threshold for distinctness (Was 0.7=45deg, Now 0.9=25deg)
                     is_distinct = False
                     break
             if is_distinct:
@@ -1566,7 +1565,7 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
             output_pairs.append(img_right)
             
         # Format camera info for LLM
-        camera_info_str = f"Successfully generated {len(final_views)} views for parent {parent_id} (Level {parent_level_idx+1} -> {child_level_idx+1})\n\n"
+        camera_info_str = f"Successfully generated {len(final_views)} views for parent {parent_id} (Level {parent_level_idx} -> {child_level_idx})\n\n"
         camera_info_str += "### Camera Viewpoints (Intuitive)\n"
         
         for i, view in enumerate(final_views):
@@ -1950,7 +1949,7 @@ def main():
                     )
                     
                     with gr.Row():
-                        cluster_alpha = gr.Slider(minimum=0.0001, maximum=0.2, value=0.04, step=0.0001, label='Alpha (空间约束强弱)')
+                        cluster_k_neighbors = gr.Slider(minimum=1, maximum=100, value=5, step=1, label='K-Neighbors (空间约束)')
                         
                     gr.Markdown("Beta (特征相似度阈值) - 4个层级")
                     with gr.Row():
@@ -1984,7 +1983,7 @@ def main():
                     with gr.Tabs():
                         with gr.Tab("1. 单簇浏览 (Old)"):
                             cluster_level = gr.Radio(
-                                ['层级 1', '层级 2', '层级 3', '层级 4'],
+                                ['层级 0', '层级 1', '层级 2', '层级 3', '层级 4'],
                                 value='层级 1',
                                 label='显示层级'
                             )
@@ -2001,7 +2000,7 @@ def main():
                             gr.Markdown("选择一个父节点，系统将自动识别其所有子节点（兄弟簇），并在4个最佳视角下生成 SoM 视觉提示图。")
                             
                             som_parent_level = gr.Radio(
-                                ['层级 1', '层级 2', '层级 3', '层级 4'],
+                                ['层级 0', '层级 1', '层级 2', '层级 3', '层级 4'],
                                 value='层级 1',
                                 label='父节点层级'
                             )
@@ -2111,7 +2110,7 @@ def main():
             load_and_cluster_points,
             inputs=[
                 cluster_pc_path, cluster_feat_path, 
-                cluster_alpha, 
+                cluster_k_neighbors, 
                 cluster_beta1, cluster_beta2, cluster_beta3, cluster_beta4,
                 cluster_point_size
             ],
@@ -2166,7 +2165,7 @@ def main():
             - **GLB 模式**: 输入服务器上的 GLB 文件路径，点击加载按钮（3D 模型可视化）
             - **ModelNet40 模式**: 输入数据索引和数据集分割，点击加载按钮（点云可视化）
             - **PCA点云模式**: 输入 .ply 文件路径（例如：`example_material/dino_features/xxx_pca.ply`），点击加载按钮（点云可视化）
-            - **Feature Clustering**: 输入点云(.npy)和特征(.npy)路径，设置距离阈值Alpha和4个相似度阈值Beta，点击计算。计算完成后可切换层级查看聚类结果。
+            - **Feature Clustering**: 输入点云(.npy)和特征(.npy)路径，设置KNN数量和4个相似度阈值Beta，点击计算。计算完成后可切换层级查看聚类结果。
             - **Bad Case Analysis**: 选择类别和错误类型，查看具体的错误案例和模型推理过程。
             
             ### 提示：
