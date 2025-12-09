@@ -1,0 +1,282 @@
+{
+  "object_id": "e85ebb729b02402bbe3b917e1196f8d3",
+  "global_name": "黑色龙形兽",
+  "global_caption": "这是一个通体黑色的四足爬行类幻想生物，具有明显的龙形特征。其身体覆盖着尖锐的背棘和甲壳状结构，头部有角冠和张开的利齿，四肢粗壮带爪，尾部细长。整体造型充满攻击性，可能用于游戏或影视中的奇幻怪物角色。",
+  "hierarchy": {
+    "cluster_id": 0,
+    "som_id": 0,
+    "level": 0,
+    "parent_id": null,
+    "name": "黑色龙形兽",
+    "caption": "这是一个通体黑色的四足爬行类幻想生物，具有明显的龙形特征。其身体覆盖着尖锐的背棘和甲壳状结构，头部有角冠和张开的利齿，四肢粗壮带爪，尾部细长。整体造型充满攻击性，可能用于游戏或影视中的奇幻怪物角色。",
+    "confidence": 0.95,
+    "point_count": 8192,
+    "visible_ratio": 1.0,
+    "children": [
+      {
+        "cluster_id": 0,
+        "som_id": 1,
+        "level": 2,
+        "parent_id": 0,
+        "name": "四肢",
+        "caption": "粗壮的四肢结构，前肢略短于后肢，关节处肌肉隆起明显，末端三趾利爪尖锐外弯，整体覆盖哑光黑色材质，无高光反射。",
+        "confidence": 0.87,
+        "point_count": 3603,
+        "visible_ratio": 0.4524007771301693,
+        "children": [
+          {
+            "cluster_id": 1,
+            "som_id": 1,
+            "level": 3,
+            "parent_id": 0,
+            "name": "前肢",
+            "caption": "粗壮的肢体结构，关节处肌肉隆起明显，末端配备三趾利爪，爪尖外弯且尖锐，表面覆盖哑光黑色材质，无高光反射，无毛发或鳞片纹理。",
+            "confidence": 0.85,
+            "point_count": 2104,
+            "visible_ratio": 0.46340304182509506,
+            "children": [
+              {
+                "cluster_id": 4,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 1,
+                "name": "前肢肩部区域",
+                "caption": "粗壮的肩部结构，肌肉块状隆起明显，呈现力量感，表面覆盖哑光黑色材质，无高光反射，无可见纹理或毛发细节。",
+                "confidence": 0.85,
+                "point_count": 948,
+                "visible_ratio": 0.40822784810126583,
+                "children": []
+              },
+              {
+                "cluster_id": 3,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 1,
+                "name": "前肢前臂区域",
+                "caption": "粗壮的前臂结构，肌肉轮廓分明，肘关节处有屈曲转折，表面覆盖哑光黑色材质，无高光反射，无可见纹理或毛发细节。",
+                "confidence": 0.87,
+                "point_count": 615,
+                "visible_ratio": 0.5040650406504065,
+                "children": []
+              },
+              {
+                "cluster_id": 5,
+                "som_id": 3,
+                "level": 4,
+                "parent_id": 1,
+                "name": "三趾利爪",
+                "caption": "三趾利爪结构，爪尖向外弯曲尖锐，每趾独立间距清晰，表面覆盖哑光黑色材质，无高光反射，无可见纹理或毛发细节。",
+                "confidence": 0.92,
+                "point_count": 541,
+                "visible_ratio": 0.4343807763401109,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 0,
+            "som_id": 2,
+            "level": 3,
+            "parent_id": 0,
+            "name": "后肢",
+            "caption": "粗壮的肢体结构，关节处肌肉隆起明显，末端配备三趾利爪，爪尖外弯且尖锐，表面覆盖哑光黑色材质，无高光反射，无毛发或鳞片纹理，支撑躯干后半部分。",
+            "confidence": 0.85,
+            "point_count": 1499,
+            "visible_ratio": 0.4809873248832555,
+            "children": [
+              {
+                "cluster_id": 2,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 0,
+                "name": "后肢连接段",
+                "caption": "后肢与躯干连接处的甲壳状结构，边缘呈不规则块状凸起，强化支撑功能；表面覆盖哑光黑色材质，光滑无纹理或高光反射，保留几何切面的硬朗轮廓。",
+                "confidence": 0.88,
+                "point_count": 865,
+                "visible_ratio": 0.5317919075144508,
+                "children": []
+              },
+              {
+                "cluster_id": 1,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 0,
+                "name": "后肢主体关节段",
+                "caption": "肢体中段粗壮，呈柱状结构，关节处有明显的块状肌肉隆起形成阶梯式轮廓；沿脊线分布锯齿状背棘，由近端向远端渐细；表面覆盖哑光黑色材质，光滑无纹理或高光反射。",
+                "confidence": 0.87,
+                "point_count": 374,
+                "visible_ratio": 0.5053475935828877,
+                "children": []
+              },
+              {
+                "cluster_id": 0,
+                "som_id": 3,
+                "level": 4,
+                "parent_id": 0,
+                "name": "后肢趾爪段",
+                "caption": "足部末端分叉为三趾结构，每趾末端配有弯曲利爪，爪尖向外侧微张；趾爪基部与足掌连接处有轻微关节凹陷，体现可动性；表面覆盖哑光黑色材质，光滑无纹理或高光反射，爪身呈锥形渐细。",
+                "confidence": 0.9,
+                "point_count": 260,
+                "visible_ratio": 0.49230769230769234,
+                "children": []
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "cluster_id": 3,
+        "som_id": 2,
+        "level": 2,
+        "parent_id": 0,
+        "name": "躯干与背棘",
+        "caption": "躯干覆盖多边形块面拼接的甲壳结构，背部沿脊柱阶梯状排列大型三角形背棘，边缘锋利，肩部有骨板状隆起，整体哑光黑色材质。",
+        "confidence": 0.9,
+        "point_count": 2058,
+        "visible_ratio": 0.4752186588921283,
+        "children": [
+          {
+            "cluster_id": 5,
+            "som_id": 1,
+            "level": 3,
+            "parent_id": 3,
+            "name": "背部阶梯状背棘",
+            "caption": "沿脊柱线排列的多组大型三角形背棘，尖端锐利呈锥形，边缘锋利并呈阶梯式向后上方倾斜；表面由不规则多边形面片拼接构成，形成棱角分明的几何造型，整体哑光黑色材质，无高光或反射。",
+            "confidence": 0.88,
+            "point_count": 1188,
+            "visible_ratio": 0.5210437710437711,
+            "children": [
+              {
+                "cluster_id": 12,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 5,
+                "name": "侧翼扁平棘刺",
+                "caption": "沿背棘两侧对称分布的翼状扁平突起结构，边缘锋利呈锯齿状，表面由不规则多边形面片拼接构成，形成棱角分明的几何造型；整体哑光黑色材质，无高光或反射效果。",
+                "confidence": 0.85,
+                "point_count": 658,
+                "visible_ratio": 0.5957446808510638,
+                "children": []
+              },
+              {
+                "cluster_id": 13,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 5,
+                "name": "中央阶梯状背棘",
+                "caption": "沿脊柱线排列的中央阶梯状结构，由多层三角形尖刺堆叠构成，尖端锐利并向后上方倾斜；表面由不规则多边形面片拼接形成棱角分明的几何造型，整体哑光黑色材质，无高光或反射效果。",
+                "confidence": 0.88,
+                "point_count": 530,
+                "visible_ratio": 0.44339622641509435,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 4,
+            "som_id": 2,
+            "level": 3,
+            "parent_id": 3,
+            "name": "肩部骨板状隆起与躯干基座",
+            "caption": "肩部区域延伸出对称的骨板状隆起结构，边缘呈锯齿状且向外展开，与躯干甲壳平滑过渡形成连续装甲；表面由多边形面片拼接，结构起伏剧烈，整体哑光黑色材质，无纹理变化。",
+            "confidence": 0.83,
+            "point_count": 870,
+            "visible_ratio": 0.5080459770114942,
+            "children": []
+          }
+        ]
+      },
+      {
+        "cluster_id": 1,
+        "som_id": 3,
+        "level": 2,
+        "parent_id": 0,
+        "name": "头部",
+        "caption": "轮廓尖锐的头部，顶部有多组向后延伸的尖锐角冠，口部张开可见多排细密尖锐齿列，整体哑光黑色材质，无额外纹理。",
+        "confidence": 0.95,
+        "point_count": 1564,
+        "visible_ratio": 0.49168797953964194,
+        "children": [
+          {
+            "cluster_id": 8,
+            "som_id": 1,
+            "level": 4,
+            "parent_id": 1,
+            "name": "角冠",
+            "caption": "多组向后倾斜的尖锐角冠呈锯齿状排列，与头骨结构融为一体，表面光滑无纹理，整体哑光黑色材质，边缘锋利且几何面清晰。",
+            "confidence": 0.95,
+            "point_count": 642,
+            "visible_ratio": 0.4190031152647975,
+            "children": []
+          },
+          {
+            "cluster_id": 7,
+            "som_id": 2,
+            "level": 4,
+            "parent_id": 1,
+            "name": "口部",
+            "caption": "张开的口部结构，上下颌分布多排细密尖锐齿列，牙齿表面呈浅棕色或暗金色调，与哑光黑色主体形成鲜明对比，整体边缘棱角分明。",
+            "confidence": 0.85,
+            "point_count": 506,
+            "visible_ratio": 0.42292490118577075,
+            "children": []
+          },
+          {
+            "cluster_id": 6,
+            "som_id": 3,
+            "level": 4,
+            "parent_id": 1,
+            "name": "面部区域",
+            "caption": "面部区域覆盖哑光黑色材质，表面平滑无纹理，边缘棱角分明，几何结构清晰，无额外装饰或反光特征。",
+            "confidence": 0.9,
+            "point_count": 416,
+            "visible_ratio": 0.39663461538461536,
+            "children": []
+          }
+        ]
+      },
+      {
+        "cluster_id": 2,
+        "som_id": 4,
+        "level": 2,
+        "parent_id": 0,
+        "name": "尾部",
+        "caption": "细长尾部自臀部向后延伸，末端逐渐收窄呈尖状，表面光滑无附加结构或分节，整体哑光黑色材质。",
+        "confidence": 0.9,
+        "point_count": 967,
+        "visible_ratio": 0.6680455015511892,
+        "children": [
+          {
+            "cluster_id": 10,
+            "som_id": 1,
+            "level": 4,
+            "parent_id": 2,
+            "name": "尾部近端连接区",
+            "caption": "表面光滑无分节，哑光黑色材质；具有明显三维弯曲弧度，近端与躯干连接处有轻微关节状凹陷和隆起，整体细长延伸并逐渐收窄。",
+            "confidence": 0.91,
+            "point_count": 773,
+            "visible_ratio": 0.5291073738680466,
+            "children": []
+          },
+          {
+            "cluster_id": 9,
+            "som_id": 2,
+            "level": 4,
+            "parent_id": 2,
+            "name": "尾部末端尖端",
+            "caption": "表面光滑无分节，哑光黑色材质；末端形成尖锐锥形结构，具有三维弯曲弧度，顶端收束锋利，无附加突起或分趾细节。",
+            "confidence": 0.94,
+            "point_count": 194,
+            "visible_ratio": 0.6752577319587629,
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "statistics": {
+    "total_clusters": 22,
+    "total_levels": 5,
+    "processing_time": 3908.474678516388
+  }
+}
