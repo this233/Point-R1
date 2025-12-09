@@ -1069,14 +1069,14 @@ def get_optimal_text_location(mask):
     
     return cX, cY
 
-def draw_som_annotations(image, masks, labels, colors=None, occluded_masks=None):
+def draw_som_annotations(image, masks, labels, colors=None, occluded_masks=None, draw_labels=False):
     """
     Draw SoM style annotations:
     - Dim background (where no mask is present)
     - Draw translucent masks (VISIBLE parts)
     - Draw contours (VISIBLE parts)
     - Draw hatched/lighter masks (OCCLUDED parts, optional)
-    - Draw numeric labels at centroids of VISIBLE parts
+    - Draw numeric labels at centroids of VISIBLE parts (if draw_labels=True)
     """
     H, W = image.shape[:2]
     
@@ -1098,31 +1098,30 @@ def draw_som_annotations(image, masks, labels, colors=None, occluded_masks=None)
     
     np.random.seed(42) # Consistent colors
     
+    # --- Pass 1: Draw All Masks (Occluded & Visible) ---
+    
     # Draw Occluded Masks First (Bottom Layer, subtler)
     if occluded_masks is not None:
         for i, (mask, label_id) in enumerate(zip(occluded_masks, labels)):
             if mask is None or np.sum(mask) == 0: continue
             
-            # Use SAME color as visible part if provided
             if colors is None:
-                # This case shouldn't happen if called from our main logic, but fallback just in case
                 np.random.seed(label_id * 100) 
                 color = np.random.randint(0, 255, 3).tolist() 
             else:
                 color = colors[i]
                 
             mask_bool = mask > 0
-            
-            # Style for Occluded:
-            # Same color tone, but much lighter/transparent
-            # Alpha 0.15 for color, blending with background
+            # Style for Occluded: Alpha 0.15
             overlay[mask_bool] = overlay[mask_bool] * 0.85 + np.array(color) * 0.15
             
     # Draw Visible Masks (Top Layer, clear)
+    # Store label info for Pass 2
+    label_info_list = []
+    
     for i, (mask, label_id) in enumerate(zip(masks, labels)):
         if mask is None or np.sum(mask) == 0: continue
         
-        # Generate color (if not provided)
         if colors is None:
             np.random.seed(label_id * 100)
             color = np.random.randint(0, 255, 3).tolist() # BGR
@@ -1135,7 +1134,6 @@ def draw_som_annotations(image, masks, labels, colors=None, occluded_masks=None)
         
         # Draw contour
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        # Smooth contours
         smooth_contours = []
         for cnt in contours:
              epsilon = 0.005 * cv2.arcLength(cnt, True)
@@ -1144,21 +1142,67 @@ def draw_som_annotations(image, masks, labels, colors=None, occluded_masks=None)
         
         cv2.drawContours(overlay, smooth_contours, -1, color, 2) # Thicker contour
         
-        # Draw Label
+        # Calculate Label Position (don't draw yet)
         cX, cY = get_optimal_text_location(mask)
+        label_info_list.append({
+            'id': label_id,
+            'text': str(label_id),
+            'pos': (cX, cY),
+            'mask': mask # Keep ref if needed for collision
+        })
+
+    # --- Pass 2: Draw All Labels (Ensure on Top) ---
+    if not draw_labels:
+        result_img = np.clip(overlay, 0, 255).astype(np.uint8)
+        return result_img
         
-        # Draw label with background box for visibility
-        text = str(label_id)
-        font_scale = 1.0
-        thickness = 2
-        (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+    for info in label_info_list:
+        text = info['text']
+        cX, cY = info['pos']
         
-        # Box
-        cv2.rectangle(overlay, (cX - text_w//2 - 4, cY - text_h//2 - 4), 
-                      (cX + text_w//2 + 4, cY + text_h//2 + 4), (0,0,0), -1)
-        # Text
-        cv2.putText(overlay, text, (cX - text_w//2, cY + text_h//2), 
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+        # SoM Style Label: White text with semi-transparent black background
+        # Font larger: 0.8 -> 1.0
+        font = cv2.FONT_HERSHEY_DUPLEX
+        font_scale = 1.0 
+        thickness = 2 # Thicker stroke for readability
+        
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        
+        # Padding
+        pad_x = 8
+        pad_y = 8
+        
+        # Calculate Box Coordinates
+        x1 = cX - text_w//2 - pad_x
+        y1 = cY - text_h//2 - pad_y
+        x2 = cX + text_w//2 + pad_x
+        y2 = cY + text_h//2 + pad_y
+        
+        # Ensure box is within image
+        H, W = overlay.shape[:2]
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(W, x2); y2 = min(H, y2)
+        
+        if x2 > x1 and y2 > y1:
+            # Draw Semi-transparent Box
+            sub_img = overlay[y1:y2, x1:x2]
+            black_rect = np.zeros(sub_img.shape, dtype=np.uint8) # Black background
+            
+            # Alpha blend: Increase opacity for better contrast (0.7 -> 0.8)
+            alpha = 0.8
+            
+            if sub_img.dtype != black_rect.dtype:
+                sub_img = sub_img.astype(np.uint8)
+                black_rect = black_rect.astype(np.uint8)
+
+            res = cv2.addWeighted(sub_img, 1-alpha, black_rect, alpha, 0)
+            overlay[y1:y2, x1:x2] = res.astype(overlay.dtype)
+            
+            # Draw Text (White)
+            text_x = cX - text_w//2
+            text_y = cY + text_h//2
+            cv2.putText(overlay, text, (text_x, text_y), 
+                        font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
             
     result_img = np.clip(overlay, 0, 255).astype(np.uint8)
     return result_img
@@ -1174,21 +1218,148 @@ def draw_labels_only(image, masks, labels):
         
         cX, cY = get_optimal_text_location(mask)
             
+        # SoM Style Label: White text with semi-transparent black background
         text = str(label_id)
-        font_scale = 1.0
+        font = cv2.FONT_HERSHEY_DUPLEX
+        font_scale = 1.0 # Larger font
         thickness = 2
-        (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
         
-        # Box (Black)
-        cv2.rectangle(result_img, (cX - text_w//2 - 4, cY - text_h//2 - 4), 
-                      (cX + text_w//2 + 4, cY + text_h//2 + 4), (0,0,0), -1)
-        # Text (White)
-        cv2.putText(result_img, text, (cX - text_w//2, cY + text_h//2), 
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        
+        # Padding
+        pad_x = 8
+        pad_y = 8
+        
+        # Calculate Box Coordinates
+        x1 = cX - text_w//2 - pad_x
+        y1 = cY - text_h//2 - pad_y
+        x2 = cX + text_w//2 + pad_x
+        y2 = cY + text_h//2 + pad_y
+        
+        # Ensure box is within image
+        H, W = result_img.shape[:2]
+        x1 = max(0, x1); y1 = max(0, y1)
+        x2 = min(W, x2); y2 = min(H, y2)
+        
+        if x2 > x1 and y2 > y1:
+            # Draw Semi-transparent Box
+            sub_img = result_img[y1:y2, x1:x2]
+            black_rect = np.zeros(sub_img.shape, dtype=np.uint8) # Black
+            
+            alpha = 0.8
+            # 确保 sub_img 和 black_rect 类型一致
+            if sub_img.dtype != black_rect.dtype:
+                sub_img = sub_img.astype(np.uint8)
+                black_rect = black_rect.astype(np.uint8)
+
+            res = cv2.addWeighted(sub_img, 1-alpha, black_rect, alpha, 0)
+            result_img[y1:y2, x1:x2] = res.astype(result_img.dtype)
+            
+            # Text
+            text_x = cX - text_w//2
+            text_y = cY + text_h//2
+            cv2.putText(result_img, text, (text_x, text_y), 
+                        font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
                         
     return result_img
 
-def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_id):
+def render_pointcloud_som_image(points, all_labels, child_ids, child_labels, color_map, 
+                                  viewpoint, center, image_size=800, point_size=2.0, dim_factor=0.25,
+                                  distance=None):
+    """
+    渲染点云的 SoM 风格图像：
+    - 兄弟簇用不同颜色
+    - 非兄弟点做暗化处理
+    - 根据距离自动调整点的大小（近大远小）
+    
+    参数:
+        points: 所有点云坐标 (N, 3)
+        all_labels: 所有点的聚类标签 (N,)
+        child_ids: 兄弟簇的 ID 列表
+        child_labels: 子节点层级的标签数组
+        color_map: {cluster_id: [R, G, B]} 颜色映射
+        viewpoint: 相机位置
+        center: 观察中心点
+        image_size: 图像尺寸
+        point_size: 基准点大小（在参考距离 1.5 处的大小）
+        dim_factor: 非兄弟点的暗化系数 (0~1)
+        distance: 相机到中心的距离（如果为 None，则自动计算）
+    """
+    if not OPEN3D_AVAILABLE:
+        return None
+    
+    # 计算相机距离
+    if distance is None:
+        distance = np.linalg.norm(viewpoint - center)
+    
+    # ========== 距离自适应点大小 ==========
+    # 基准：距离 1.5 时使用 point_size
+    # 距离越近，点越大；距离越远，点越小
+    # 公式：adaptive_size = base_size * (reference_dist / actual_dist)^0.6
+    # 使用 0.6 次方让变化更平缓，避免近距离时点过大
+    # 限制范围：[1.5, 5.0] 避免过大或过小
+    REFERENCE_DIST = 1.5
+    scale_factor = (REFERENCE_DIST / max(distance, 0.3)) ** 0.6  # 平方根让变化更平缓
+    adaptive_point_size = point_size * scale_factor
+    adaptive_point_size = np.clip(adaptive_point_size, 1.5, 5.0)
+    
+    print(f"DEBUG: PointCloud render - distance={distance:.2f}, adaptive_point_size={adaptive_point_size:.1f}")
+        
+    # 1. 为每个点分配颜色
+    colors = np.zeros((len(points), 3), dtype=np.float64)
+    
+    # 获取兄弟簇的点索引
+    sibling_mask = np.isin(child_labels, child_ids)
+    
+    # 非兄弟点设为暗灰色
+    colors[~sibling_mask] = [dim_factor, dim_factor, dim_factor]
+    
+    # 兄弟点按簇分配颜色
+    for cid in child_ids:
+        mask = (child_labels == cid)
+        color = np.array(color_map[cid]) / 255.0  # 转换为 [0, 1]
+        colors[mask] = color
+    
+    # 2. 创建 Open3D 点云对象
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    
+    # 3. 创建渲染器
+    renderer = rendering.OffscreenRenderer(image_size, image_size)
+    renderer.scene.set_background([1.0, 1.0, 1.0, 1.0])  # 白色背景
+    
+    # 4. 创建点云材质
+    mat = rendering.MaterialRecord()
+    mat.shader = "defaultUnlit"
+    mat.point_size = adaptive_point_size * 2  # Open3D 的点大小单位不同
+    
+    # 5. 添加点云到场景
+    renderer.scene.add_geometry("pointcloud", pcd, mat)
+    
+    # 6. 设置相机
+    fov = 60.0
+    fx = image_size / (2.0 * np.tan(np.radians(fov) / 2.0))
+    fy = fx
+    cx = image_size / 2.0
+    cy = image_size / 2.0
+    
+    intrinsic = o3d.camera.PinholeCameraIntrinsic(image_size, image_size, fx, fy, cx, cy)
+    extrinsic = create_camera_extrinsic_from_viewpoint(viewpoint, center=center)
+    
+    renderer.setup_camera(intrinsic, extrinsic)
+    
+    # 7. 渲染
+    image = renderer.render_to_image()
+    img_array = np.asarray(image)[:, :, :3]  # (H, W, 3) RGB
+    
+    # 清理
+    del renderer
+    
+    return img_array
+
+
+def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_id, use_pointcloud_mode=False):
     """
     Automatically find 4 views for the sibling group of the selected parent,
     and generate SoM style visual prompts.
@@ -1211,6 +1382,26 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
     
     child_labels = clustering_results[child_level_idx]
     
+    # --- New: Sort children by point count and create SoM ID mapping (1..N) ---
+    # 这确保了编号是连续的 (1, 2, 3...) 且基于大小排序，符合 SoM 习惯，且在不同视角下保持一致
+    child_point_counts = []
+    for cid in child_ids:
+        count = np.sum(child_labels == cid)
+        child_point_counts.append((cid, count))
+    
+    # Sort by count descending (Largest first -> ID 1)
+    child_point_counts.sort(key=lambda x: x[1], reverse=True)
+    sorted_child_ids = [x[0] for x in child_point_counts]
+    
+    # Map Cluster ID -> SoM ID
+    som_id_map = {cid: i+1 for i, cid in enumerate(sorted_child_ids)}
+    
+    # Update child_ids to be the sorted version
+    child_ids = sorted_child_ids
+    print(f"Sorted child IDs by size: {child_ids}")
+    print(f"SoM ID Mapping: {som_id_map}")
+    # --------------------------------------------------------------------------
+    
     # Collect points for all children (the "Target Group")
     # We want to optimize views for the UNION of these children
     group_indices = []
@@ -1225,9 +1416,32 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
     group_center = np.mean(group_points, axis=0)
     
     # Color map for children
-    # Pre-generate random colors for each child ID
-    np.random.seed(123)
-    color_map = {cid: np.random.randint(0, 255, 3).tolist() for cid in child_ids}
+    # 使用预定义的高区分度颜色，确保颜色之间有足够的视觉区分度
+    DISTINCT_COLORS = [
+        [255, 0, 0],      # 红色
+        [0, 255, 0],      # 绿色
+        [0, 0, 255],      # 蓝色
+        [255, 255, 0],    # 黄色
+        [255, 0, 255],    # 品红色
+        [0, 255, 255],    # 青色
+        [255, 128, 0],    # 橙色
+        [128, 0, 255],    # 蓝紫色
+        [0, 255, 128],    # 春绿色
+        [255, 0, 128],    # 玫红色
+        [128, 255, 0],    # 酸橙色
+        [0, 128, 255],    # 蔚蓝色
+        [128, 0, 0],      # 深红色
+        [0, 128, 0],      # 深绿色
+        [0, 0, 128],      # 深蓝色
+        [128, 128, 0],    # 橄榄色
+        [128, 0, 128],    # 紫色
+        [0, 128, 128],    # 蓝绿色
+        [165, 42, 42],    # 棕色
+        [255, 215, 0],    # 金色
+    ]
+    color_map = {}
+    for i, cid in enumerate(child_ids):
+        color_map[cid] = DISTINCT_COLORS[i % len(DISTINCT_COLORS)]
     
     # 2. Search for 4 best views
     image_size = 256
@@ -1301,102 +1515,37 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
             
             valid_mask = is_visible_depth
             
-            # 1. Basic Visibility Score
-            visible_count = np.sum(valid_mask)
-            total_count = len(group_points)
-            visibility_ratio = visible_count / total_count
+            # ========== 精简评分体系（点云模式优化）==========
+            # 核心指标：
+            # 1. min_child_vis  - 最差子簇的可见比例（确保每个区域都有信息）
+            # 2. mean_child_vis - 平均子簇可见比例（整体信息量）
+            # 3. overall_vis    - 整体可见性（辅助）
             
-            if visibility_ratio < 0.1: continue # Too few points visible
-            
-            # 2. Analyze Child Distribution (Separation & Overlap)
-            # Re-calculate using FULL points (ignoring occlusion) for Overlap check
-            # User Requirement: Overlap should be calculated based on the FULL mask, not just the visible part.
-            # This prevents cases where a child is "visible" only because its front face is seen, but it's actually blocking another child behind it.
-            
-            full_pixels = pixel_coords[valid_mask_fov] # Points inside FOV
-            full_cids = group_point_child_ids[valid_mask_fov]
-            
-            child_bboxes_full = {}
-            child_centers_full = {}
-            
+            # 计算每个子簇的可见性
+            child_vis_list = []
             for cid in child_ids:
-                mask_c = (full_cids == cid)
-                pts_c = full_pixels[mask_c]
-                
-                if len(pts_c) < 5: continue
-                
-                min_xy = np.min(pts_c, axis=0)
-                max_xy = np.max(pts_c, axis=0)
-                center = np.mean(pts_c, axis=0)
-                
-                child_bboxes_full[cid] = (min_xy, max_xy)
-                child_centers_full[cid] = center
-                
-            # Calculate Metrics using FULL bboxes
-            total_overlap_ratio = 0.0
-            total_separation = 0.0
-            pair_count = 0
+                c_mask = (group_point_child_ids == cid)
+                c_total = np.sum(c_mask)
+                c_visible = np.sum(valid_mask & c_mask)
+                c_vis_ratio = c_visible / c_total if c_total > 0 else 0
+                child_vis_list.append(c_vis_ratio)
             
-            cids_present = list(child_bboxes_full.keys())
+            # 核心指标计算
+            min_child_vis = min(child_vis_list) if child_vis_list else 0
+            mean_child_vis = np.mean(child_vis_list) if child_vis_list else 0
+            overall_vis = np.sum(valid_mask) / len(group_points)
             
-            # Still calculate visibility ratio for score (using the previously computed occlusion-aware mask)
-            child_visibility_ratio = len(cids_present) / len(child_ids) # Note: This is "in FOV" ratio now, but we want "visible" ratio
+            # 快速淘汰：整体可见性太低
+            if overall_vis < 0.1:
+                continue
             
-            # Re-calculate strict visibility ratio for scoring
-            visible_indices = np.where(valid_mask)[0]
-            vis_cids = group_point_child_ids[visible_indices]
-            unique_vis_cids = np.unique(vis_cids)
-            strict_child_vis_ratio = len(unique_vis_cids) / len(child_ids)
-
-            if len(cids_present) < 2:
-                avg_overlap = 0.0
-                norm_separation = 0.0
-            else:
-                for i in range(len(cids_present)):
-                    for j in range(i+1, len(cids_present)):
-                        cid1 = cids_present[i]
-                        cid2 = cids_present[j]
-                        
-                        b1_min, b1_max = child_bboxes_full[cid1]
-                        b2_min, b2_max = child_bboxes_full[cid2]
-                        
-                        # Intersection
-                        ix_min = max(b1_min[0], b2_min[0])
-                        iy_min = max(b1_min[1], b2_min[1])
-                        ix_max = min(b1_max[0], b2_max[0])
-                        iy_max = min(b1_max[1], b2_max[1])
-                        
-                        iw = max(0, ix_max - ix_min)
-                        ih = max(0, iy_max - iy_min)
-                        intersection = iw * ih
-                        
-                        # Union
-                        area1 = (b1_max[0] - b1_min[0]) * (b1_max[1] - b1_min[1])
-                        area2 = (b2_max[0] - b2_min[0]) * (b2_max[1] - b2_min[1])
-                        union = area1 + area2 - intersection
-                        
-                        if union > 0:
-                            total_overlap_ratio += intersection / union
-                        
-                        # Separation
-                        dist_sep = np.linalg.norm(child_centers_full[cid1] - child_centers_full[cid2])
-                        total_separation += dist_sep
-                        pair_count += 1
-                        
-                avg_overlap = total_overlap_ratio / pair_count if pair_count > 0 else 0
-                norm_separation = (total_separation / pair_count) / image_size if pair_count > 0 else 0
-
-            # Final Score Formula
-            # Priority 1: Avoid Overlap (Penalty)
-            # Priority 2: Ensure Visibility (Occlusion Check enabled)
-            # Priority 3: Maximize Separation
-            
-            # Tuned weights based on user feedback "Maximize visibility" & "High Quality"
-            # Heavily penalize overlap to enforce strict separation of full masks
-            score = (visibility_ratio * 8.0) + \
-                    (strict_child_vis_ratio * 5.0) + \
-                    (norm_separation * 4.0) - \
-                    (avg_overlap * 30.0)
+            # 评分公式（简化为3项）
+            # - min_child_vis 权重最高：确保"最差的簇"也能看到
+            # - mean_child_vis 次之：整体信息量
+            # - overall_vis 辅助：总可见点数
+            score = (min_child_vis * 10.0) + \
+                    (mean_child_vis * 5.0) + \
+                    (overall_vis * 3.0)
                 
             candidates.append({
                 'score': score,
@@ -1404,62 +1553,84 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
                 'dist': dist,
                 'eye': eye,
                 'stats': {
-                    'vis': visibility_ratio,
-                    'child_vis': strict_child_vis_ratio,
-                    'sep': norm_separation,
-                    'overlap': avg_overlap
+                    'min_child': min_child_vis,
+                    'mean_child': mean_child_vis,
+                    'overall': overall_vis,
+                    'child_vis_detail': child_vis_list  # 保留详情用于调试
                 }
             })
         
         candidates.sort(key=lambda x: x['score'], reverse=True)
         
         # Debug: Print top candidates
-        print("DEBUG: Top 5 Candidates:")
+        print(f"DEBUG: Total {len(candidates)} candidates, Top 5:")
         for i, cand in enumerate(candidates[:5]):
-             stats = cand.get('stats', {})
-             print(f"  #{i+1}: Score={cand['score']:.2f} | Vis={stats.get('vis',0):.2f}, ChildVis={stats.get('child_vis',0):.2f}, Sep={stats.get('sep',0):.2f}, Overlap={stats.get('overlap',0):.2f}")
+            stats = cand.get('stats', {})
+            print(f"  #{i+1}: Score={cand['score']:.2f} | "
+                  f"MinChild={stats.get('min_child',0):.2f}, "
+                  f"MeanChild={stats.get('mean_child',0):.2f}, "
+                  f"Overall={stats.get('overall',0):.2f}")
 
-        # --- Quality Check & Filtering ---
-        # Thresholds (Stricter based on user request for high quality)
-        # Overlap threshold tightened to ensure full masks are clearly distinguished
-        MAX_ALLOWED_OVERLAP = 0.25   # Reject if overlap > 25%
-        MIN_ALLOWED_VISIBILITY = 0.3 # Reject if vis < 20%
-        MIN_CHILD_VISIBILITY = 0.75   # Reject if < 60% of children are visible
+        # ========== 质量阈值筛选（精简版）==========
+        # 核心要求：
+        # 1. 每个子簇都要有足够可见性（最差的也不能太差）
+        # 2. 整体信息量要足够
+        MIN_WORST_CHILD_VIS = 0.15   # 最差子簇至少 15% 可见（确保每个区域都有信息）
+        MIN_MEAN_CHILD_VIS = 0.35    # 平均子簇至少 35% 可见（整体信息量）
+        MIN_OVERALL_VIS = 0.25       # 整体至少 25% 可见
         
         valid_candidates = []
         for cand in candidates:
             stats = cand.get('stats', {})
-            if stats.get('overlap', 1.0) <= MAX_ALLOWED_OVERLAP and \
-               stats.get('vis', 0.0) >= MIN_ALLOWED_VISIBILITY and \
-               stats.get('child_vis', 0.0) >= MIN_CHILD_VISIBILITY:
+            if stats.get('min_child', 0) >= MIN_WORST_CHILD_VIS and \
+               stats.get('mean_child', 0) >= MIN_MEAN_CHILD_VIS and \
+               stats.get('overall', 0) >= MIN_OVERALL_VIS:
                 valid_candidates.append(cand)
                 
         if len(valid_candidates) == 0:
-            best_cand = candidates[0] if candidates else None
-            best_overlap = best_cand.get('stats', {}).get('overlap', 0) if best_cand else 0
-            msg = f"视图生成失败：无法找到满足高质量要求的视角。\n(Best Overlap: {best_overlap:.1%}, Threshold: {MAX_ALLOWED_OVERLAP:.1%})"
-            print(f"DEBUG: Rejected all candidates. Best overlap: {best_overlap}")
-            return [None]*12 + [msg]
+            # 如果没有满足条件的，放宽条件再试一次
+            print("DEBUG: No candidates passed strict thresholds, relaxing...")
+            RELAXED_MIN_CHILD = 0.08
+            RELAXED_MEAN_CHILD = 0.20
+            for cand in candidates:
+                stats = cand.get('stats', {})
+                if stats.get('min_child', 0) >= RELAXED_MIN_CHILD and \
+                   stats.get('mean_child', 0) >= RELAXED_MEAN_CHILD:
+                    valid_candidates.append(cand)
+            
+            if len(valid_candidates) == 0:
+                best_cand = candidates[0] if candidates else None
+                if best_cand:
+                    stats = best_cand.get('stats', {})
+                    msg = f"视图生成失败：无法找到满足质量要求的视角。\n" \
+                          f"最佳候选: MinChild={stats.get('min_child',0):.1%}, " \
+                          f"MeanChild={stats.get('mean_child',0):.1%}"
+                else:
+                    msg = "视图生成失败：没有候选视角"
+                return [None]*12 + [msg]
 
-        # Select 6 distinct views from VALID candidates
+        # ========== 独立性筛选（视角多样性）==========
+        # 点积阈值 0.5 对应约 60°，确保视角足够丰富
+        DISTINCTNESS_THRESHOLD = 0.7
+        
         final_views = []
         for cand in valid_candidates:
-            if len(final_views) >= 6: break
+            if len(final_views) >= 6:
+                break
             
             is_distinct = True
             for selected in final_views:
-                if np.dot(cand['direction'], selected['direction']) > 0.7: # Threshold for distinctness (Was 0.7=45deg, Now 0.9=25deg)
+                # 点积 > 阈值 表示方向太接近
+                if np.dot(cand['direction'], selected['direction']) > DISTINCTNESS_THRESHOLD:
                     is_distinct = False
                     break
             if is_distinct:
                 final_views.append(cand)
         
-        # If we found fewer than 6 valid distinct views, we just return what we have.
-        # We do NOT fill with bad views.
         if len(final_views) == 0:
-             return [None]*12 + ["筛选后未找到独立视角"]
+            return [None]*12 + ["筛选后未找到独立视角"]
              
-        print(f"DEBUG: Selected {len(final_views)} valid views.")
+        print(f"DEBUG: Selected {len(final_views)} distinct views (threshold={DISTINCTNESS_THRESHOLD})")
 
         # 3. Render High-Res Final Images
         renderer.cleanup()
@@ -1479,93 +1650,139 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
         intrinsic_final = create_camera_intrinsic_from_params(cam_params)
             
         output_pairs = [] # Will contain (Left, Right) for each view
+        
+        # ========== 点云模式分支 ==========
+        if use_pointcloud_mode:
+            # 点云模式：Clean 用 GLB 渲染，SoM 用点云聚类可视化
+            # 注意：需要先完成所有 GLB 渲染，再清理渲染器，然后再进行点云渲染
+            # 避免同时运行多个渲染器导致资源冲突
             
-        for view in final_views:
-            # Render base image
-            img_base, _ = renderer_final.render_view(view['eye'], center=group_center)
+            # Step 1: 先渲染所有 Clean 视图 (GLB)
+            clean_images = []
+            for view in final_views:
+                img_left, _ = renderer_final.render_view(view['eye'], center=group_center)
+                clean_images.append(img_left)
             
-            # Generate masks for EACH child
-            child_labels_list = []
-            child_colors = []
+            # Step 2: 清理 GLB 渲染器
+            renderer_final.cleanup()
+            renderer_final = None
             
-            # 1. Get strict visible mask for current view
-            # Note: Using create_camera_extrinsic_from_viewpoint is correct here as it matches render_view logic
-            pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
-                group_points, intrinsic_final, create_camera_extrinsic_from_viewpoint(view['eye'], center=group_center), image_size=final_size
-            )
-            # Re-render depth for final size to check occlusion
-            _, depth_map_final = renderer_final.render_view(view['eye'], center=group_center, return_depth=True)
-            
-            is_visible_strict = np.zeros(len(group_points), dtype=bool)
-            fov_indices = np.where(valid_mask_fov)[0]
-            if len(fov_indices) > 0:
-                 vis_sub = check_visible_points_with_depth(
-                    group_points[fov_indices], 
-                    pixel_coords[fov_indices], 
-                    depths[fov_indices], 
-                    depth_map_final,
-                    use_relative_threshold=True, 
-                    relative_threshold_ratio=0.02
-                 )
-                 is_visible_strict[fov_indices] = vis_sub
-                 
-            # Now for each child, generate mask based on VISIBLE points
-            child_masks_visible = []
-            child_masks_occluded = []
-            
-            for cid in child_ids:
-                # Record metadata for drawing
-                child_labels_list.append(cid)
-                child_colors.append(color_map[cid])
+            # Step 3: 渲染所有 SoM 视图 (点云)
+            for i, view in enumerate(final_views):
+                img_left = clean_images[i]
+                
+                # Right Image (SoM): 点云聚类可视化 - 兄弟簇各自颜色，非兄弟点暗化
+                # 传入距离信息，让点大小根据距离自适应（近大远小）
+                img_right = render_pointcloud_som_image(
+                    points, child_labels, child_ids, child_labels, color_map,
+                    view['eye'], group_center, image_size=final_size, point_size=3.0, 
+                    dim_factor=0.25,  # 非兄弟点暗化
+                    distance=view['dist']  # 传入距离
+                )
+                
+                if img_right is None:
+                    img_right = np.ones((final_size, final_size, 3), dtype=np.uint8) * 200
+                    
+                output_pairs.append(img_left)
+                output_pairs.append(img_right)
+        else:
+            # ========== GLB 渲染模式 (原有逻辑) ==========
+            for view in final_views:
+                # Render base image
+                img_base, _ = renderer_final.render_view(view['eye'], center=group_center)
+                
+                # Generate masks for EACH child
+                child_labels_list = []
+                child_colors_list = []
+                
+                # 1. Get strict visible mask for current view
+                # Note: Using create_camera_extrinsic_from_viewpoint is correct here as it matches render_view logic
+                pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
+                    group_points, intrinsic_final, create_camera_extrinsic_from_viewpoint(view['eye'], center=group_center), image_size=final_size
+                )
+                # Re-render depth for final size to check occlusion
+                _, depth_map_final = renderer_final.render_view(view['eye'], center=group_center, return_depth=True)
+                
+                is_visible_strict = np.zeros(len(group_points), dtype=bool)
+                fov_indices = np.where(valid_mask_fov)[0]
+                if len(fov_indices) > 0:
+                     vis_sub = check_visible_points_with_depth(
+                        group_points[fov_indices], 
+                        pixel_coords[fov_indices], 
+                        depths[fov_indices], 
+                        depth_map_final,
+                        use_relative_threshold=True, 
+                        relative_threshold_ratio=0.02
+                     )
+                     is_visible_strict[fov_indices] = vis_sub
+                     
+                # Now for each child, generate mask based on VISIBLE points
+                child_masks_visible = []
+                child_masks_occluded = []
+                
+                for cid in child_ids:
+                    # Record metadata for drawing
+                    # Use SoM ID (1..N) instead of Cluster ID to align with SoM standard
+                    child_labels_list.append(som_id_map[cid])
+                    child_colors_list.append(color_map[cid])
 
-                # Find indices relative to the FULL group cloud
-                c_local_mask = (group_point_child_ids == cid)
-                c_points_all = group_points[c_local_mask]
+                    # Find indices relative to the FULL group cloud
+                    c_local_mask = (group_point_child_ids == cid)
+                    c_points_all = group_points[c_local_mask]
+                    
+                    # Get visible subset for this child
+                    c_vis_mask = is_visible_strict[c_local_mask]
+                    c_points_vis = c_points_all[c_vis_mask]
+                    c_points_occ = c_points_all[~c_vis_mask]
+                    
+                    # 1. Generate Visible Mask
+                    if len(c_points_vis) > 0:
+                        mask_vis = get_robust_mask_from_far_view(
+                            renderer_final, c_points_vis, view['direction'], group_center, 
+                            view['dist'], intrinsic_final, final_size, zoom_factor=2.0
+                        )
+                    else:
+                        mask_vis = np.zeros((final_size, final_size), dtype=np.uint8)
+                    child_masks_visible.append(mask_vis)
+                    
+                    # 2. Generate Occluded Mask (if requested)
+                    if len(c_points_occ) > 0:
+                         # Use slightly larger kernel or different processing if needed, 
+                         # but standard robust mask is fine.
+                         mask_occ = get_robust_mask_from_far_view(
+                            renderer_final, c_points_occ, view['direction'], group_center, 
+                            view['dist'], intrinsic_final, final_size, zoom_factor=2.0
+                        )
+                    else:
+                        mask_occ = np.zeros((final_size, final_size), dtype=np.uint8)
+                    child_masks_occluded.append(mask_occ)
                 
-                # Get visible subset for this child
-                c_vis_mask = is_visible_strict[c_local_mask]
-                c_points_vis = c_points_all[c_vis_mask]
-                c_points_occ = c_points_all[~c_vis_mask]
+                # Generate Right Image (SoM)
+                img_right = draw_som_annotations(
+                    img_base, 
+                    child_masks_visible, 
+                    child_labels_list, 
+                    child_colors_list,
+                    occluded_masks=child_masks_occluded # Pass occluded masks
+                )
                 
-                # 1. Generate Visible Mask
-                if len(c_points_vis) > 0:
-                    mask_vis = get_robust_mask_from_far_view(
-                        renderer_final, c_points_vis, view['direction'], group_center, 
-                        view['dist'], intrinsic_final, final_size, zoom_factor=2.0
-                    )
-                else:
-                    mask_vis = np.zeros((final_size, final_size), dtype=np.uint8)
-                child_masks_visible.append(mask_vis)
+                # Generate Left Image (Clean - No Labels)
+                img_left = img_base.copy()
                 
-                # 2. Generate Occluded Mask (if requested)
-                if len(c_points_occ) > 0:
-                     # Use slightly larger kernel or different processing if needed, 
-                     # but standard robust mask is fine.
-                     mask_occ = get_robust_mask_from_far_view(
-                        renderer_final, c_points_occ, view['direction'], group_center, 
-                        view['dist'], intrinsic_final, final_size, zoom_factor=2.0
-                    )
-                else:
-                    mask_occ = np.zeros((final_size, final_size), dtype=np.uint8)
-                child_masks_occluded.append(mask_occ)
-            
-            # Generate Right Image (SoM)
-            img_right = draw_som_annotations(
-                img_base, 
-                child_masks_visible, 
-                child_labels_list, 
-                child_colors,
-                occluded_masks=child_masks_occluded # Pass occluded masks
-            )
-            
-            # Generate Left Image (Clean + Labels)
-            img_left = draw_labels_only(img_base, child_masks_visible, child_labels_list)
-            
-            output_pairs.append(img_left)
-            output_pairs.append(img_right)
+                output_pairs.append(img_left)
+                output_pairs.append(img_right)
             
         # Format camera info for LLM
         camera_info_str = f"Successfully generated {len(final_views)} views for parent {parent_id} (Level {parent_level_idx} -> {child_level_idx})\n\n"
+        
+        # Add ID Mapping Info
+        camera_info_str += "### Object ID Mapping (SoM ID -> Cluster ID)\n"
+        for cid in child_ids:
+             som_id = som_id_map[cid]
+             count = np.sum(child_labels == cid)
+             camera_info_str += f"- **ID {som_id}**: Cluster {cid} (Points: {count})\n"
+        camera_info_str += "\n"
+
         camera_info_str += "### Camera Viewpoints (Intuitive)\n"
         
         for i, view in enumerate(final_views):
@@ -1648,8 +1865,9 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
         while len(output_pairs) < 12:
             output_pairs.append(None)
 
-        renderer_final.cleanup()
-        renderer_final = None
+        if renderer_final is not None:
+            renderer_final.cleanup()
+            renderer_final = None
         return [*output_pairs, camera_info_str]
 
     except Exception as e:
@@ -2006,6 +2224,12 @@ def main():
                             )
                             som_parent_id = gr.Number(label='父节点 ID', value=0, precision=0)
                             
+                            som_pointcloud_mode = gr.Checkbox(
+                                label='点云模式 (不渲染GLB，直接绘制点云聚类)',
+                                value=False,
+                                info='勾选后将直接渲染点云，兄弟簇各自颜色，非兄弟点暗化'
+                            )
+                            
                             som_gen_btn = gr.Button("生成兄弟簇 SoM 组图", variant="primary")
                                 
                 # Bad Case Analysis Inputs
@@ -2137,7 +2361,7 @@ def main():
         # New SoM Interaction
         som_gen_btn.click(
             render_sibling_group_views,
-            inputs=[cluster_state, cluster_glb_path, som_parent_level, som_parent_id],
+            inputs=[cluster_state, cluster_glb_path, som_parent_level, som_parent_id, som_pointcloud_mode],
             outputs=[
                 som_v1_l, som_v1_r,
                 som_v2_l, som_v2_r,
