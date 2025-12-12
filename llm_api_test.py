@@ -1,32 +1,71 @@
-# coding=utf-8
+from openai import OpenAI
+import os
 
-import requests
-import json
+# 初始化OpenAI客户端
+client = OpenAI(
+    api_key = os.getenv("DASH_API_KEY"),
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
 
-if __name__ == '__main__':
-    url = "https://api.modelarts-maas.com/v1/chat/completions" # API地址
-    api_key = "siq3nBr8C75Pv89E0CQaKq4c3KTCpOREj8Umj8OMCM5ByKkBrHxm-IOPiLuFlEOjnU3HFE5Hv-sfLzShM8CCoA"  # 把yourApiKey替换成已获取的API Key 
-    
-    # Send request.
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {api_key}' 
-    }
-    data = {
-        "model":"DeepSeek-V3", # model参数
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": "你好"}
-        ],
-        # 是否开启流式推理, 默认为False, 表示不开启流式推理
-        "stream": False,
-        # 在流式输出时是否展示使用的token数目。只有当stream为True时改参数才会生效。
-        # "stream_options": { "include_usage": True },
-        # 控制采样随机性的浮点数，值较低时模型更具确定性，值较高时模型更具创造性。"0"表示贪婪取样。默认为0.6。
-        "temperature": 0.6
-    }
-    response = requests.post(url, headers=headers, data=json.dumps(data), verify=False)
+reasoning_content = ""  # 定义完整思考过程
+answer_content = ""     # 定义完整回复
+is_answering = False   # 判断是否结束思考过程并开始回复
+enable_thinking = False
+# 创建聊天完成请求
+completion = client.chat.completions.create(
+    model="qwen3-vl-plus",
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://img.alicdn.com/imgextra/i1/O1CN01gDEY8M1W114Hi3XcN_!!6000000002727-0-tps-1024-406.jpg"
+                    },
+                },
+                {"type": "text", "text": "这道题怎么解答？"},
+            ],
+        },
+    ],
+    stream=True,
+    # enable_thinking 参数开启思考过程，thinking_budget 参数设置最大推理过程 Token 数
+    extra_body={
+        'enable_thinking': True,
+        "thinking_budget": 81920},
+    n=4
 
-    # Print result.
-    print(response.status_code)
-    print(response.text)
+    # 解除以下注释会在最后一个chunk返回Token使用量
+    # stream_options={
+    #     "include_usage": True
+    # }
+)
+
+
+if enable_thinking:
+    print("\n" + "=" * 20 + "思考过程" + "=" * 20 + "\n")
+
+for chunk in completion:
+    # 如果chunk.choices为空，则打印usage
+    if not chunk.choices:
+        print("\nUsage:")
+        print(chunk.usage)
+    else:
+        delta = chunk.choices[0].delta
+        # 打印思考过程
+        if hasattr(delta, 'reasoning_content') and delta.reasoning_content != None:
+            print(delta.reasoning_content, end='', flush=True)
+            reasoning_content += delta.reasoning_content
+        else:
+            # 开始回复
+            if delta.content != "" and is_answering is False:
+                print("\n" + "=" * 20 + "完整回复" + "=" * 20 + "\n")
+                is_answering = True
+            # 打印回复过程
+            print(delta.content, end='', flush=True)
+            answer_content += delta.content
+
+# print("=" * 20 + "完整思考过程" + "=" * 20 + "\n")
+# print(reasoning_content)
+# print("=" * 20 + "完整回复" + "=" * 20 + "\n")
+# print(answer_content)

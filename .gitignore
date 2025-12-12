@@ -211,3 +211,5 @@ data/
 renders_o3d/
 *_intermediate_2d/
 *_features.npy
+
+outputs/captions/images

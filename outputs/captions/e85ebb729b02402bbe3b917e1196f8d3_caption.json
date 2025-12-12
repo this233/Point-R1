@@ -1,0 +1,307 @@
+{
+  "object_id": "e85ebb729b02402bbe3b917e1196f8d3",
+  "global_name": "黑色龙形兽",
+  "global_caption": "一个通体黑色的四足龙形生物3D模型，具有尖锐的背棘、张开的利齿和长尾。其形态融合了爬行动物与幻想生物特征，四肢粗壮带爪，头部有角状突起。整体造型充满攻击性，可能用于游戏或影视中的怪物角色设计。",
+  "hierarchy": {
+    "cluster_id": 0,
+    "som_id": 0,
+    "level": 0,
+    "parent_id": null,
+    "name": "黑色龙形兽",
+    "caption": "一个通体黑色的四足龙形生物3D模型，具有尖锐的背棘、张开的利齿和长尾。其形态融合了爬行动物与幻想生物特征，四肢粗壮带爪，头部有角状突起。整体造型充满攻击性，可能用于游戏或影视中的怪物角色设计。",
+    "color": "",
+    "point_count": 8192,
+    "visible_ratio": 1.0,
+    "children": [
+      {
+        "cluster_id": 3,
+        "som_id": 1,
+        "level": 2,
+        "parent_id": 0,
+        "name": "躯干与前肢",
+        "caption": "粗壮的块状躯干连接着肌肉发达的前肢，前肢末端带有利爪，整体呈流线型攻击姿态，表面为哑光黑色，结构坚固有力。",
+        "color": "红色",
+        "point_count": 3191,
+        "visible_ratio": 0.44468818552178,
+        "children": [
+          {
+            "cluster_id": 9,
+            "som_id": 1,
+            "level": 3,
+            "parent_id": 3,
+            "name": "躯干主体",
+            "caption": "块状粗壮的躯干，表面平滑呈哑光黑色，结构坚固，连接前后肢与背脊，侧面可见肌肉线条轮廓，整体形态为攻击姿态提供支撑。",
+            "color": "红色",
+            "point_count": 1493,
+            "visible_ratio": 0.23308774279973207,
+            "children": [
+              {
+                "cluster_id": 13,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 9,
+                "name": "背部脊甲与肩胛区域",
+                "caption": "覆盖于躯干上部的块状结构，表面平滑呈哑光黑色，边缘带有尖锐的棘刺，与粗壮的肩部肌肉相连，构成坚固的防御与力量支撑区域。",
+                "color": "红色",
+                "point_count": 903,
+                "visible_ratio": 0.36655592469545956,
+                "children": []
+              },
+              {
+                "cluster_id": 14,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 9,
+                "name": "胸腹腔体",
+                "caption": "位于躯干前下方的膨大腔体，表面平滑呈哑光黑色，形态饱满以容纳内脏，其上缘与红色脊甲区域相接，下缘过渡至四肢根部，提供核心支撑。",
+                "color": "绿色",
+                "point_count": 590,
+                "visible_ratio": 0.45084745762711864,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 6,
+            "som_id": 2,
+            "level": 3,
+            "parent_id": 3,
+            "name": "左前肢",
+            "caption": "肌肉发达的左前肢，呈弯曲蓄力姿态，末端带锋利爪尖，表面为哑光黑色，关节处有明显块状结构，与躯干和肩胛区紧密相连。",
+            "color": "绿色",
+            "point_count": 615,
+            "visible_ratio": 0.3284552845528455,
+            "children": [
+              {
+                "cluster_id": 10,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 6,
+                "name": "左前肢上臂与前臂",
+                "caption": "粗壮的肌肉块状结构，呈弯曲蓄力姿态，表面为哑光黑色，关节处有明显隆起，与肩胛区紧密相连，末端连接爪部。",
+                "color": "红色",
+                "point_count": 503,
+                "visible_ratio": 0.5407554671968191,
+                "children": []
+              },
+              {
+                "cluster_id": 9,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 6,
+                "name": "左前肢爪部",
+                "caption": "由多个指节构成，末端带锋利尖爪，表面哑光黑色，与前臂关节衔接自然，爪尖朝向前方，呈现抓握或攻击姿态。",
+                "color": "绿色",
+                "point_count": 112,
+                "visible_ratio": 0.6339285714285714,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 8,
+            "som_id": 3,
+            "level": 3,
+            "parent_id": 3,
+            "name": "肩胛/背脊过渡区",
+            "caption": "位于躯干上部与前肢根部之间的过渡区域，结构厚实，表面覆盖尖锐背棘基座，呈哑光黑色，是连接背部与前肢力量传递的关键结构。",
+            "color": "蓝色",
+            "point_count": 542,
+            "visible_ratio": 0.5295202952029521,
+            "children": []
+          },
+          {
+            "cluster_id": 7,
+            "som_id": 4,
+            "level": 3,
+            "parent_id": 3,
+            "name": "右前肢",
+            "caption": "粗壮的右前肢，与左前肢对称，呈前伸攻击姿态，末端爪尖锐利，表面哑光黑色，肌肉块分明，与躯干和肩胛区形成稳固连接。",
+            "color": "黄色",
+            "point_count": 541,
+            "visible_ratio": 0.4454713493530499,
+            "children": []
+          }
+        ]
+      },
+      {
+        "cluster_id": 2,
+        "som_id": 2,
+        "level": 2,
+        "parent_id": 0,
+        "name": "后肢与臀部",
+        "caption": "宽厚的臀部连接着强壮的后肢，后肢呈弯曲蓄力状态，脚掌宽大带爪，支撑整个身体重量，表面为统一的哑光黑色材质。",
+        "color": "绿色",
+        "point_count": 2594,
+        "visible_ratio": 0.47879722436391675,
+        "children": [
+          {
+            "cluster_id": 5,
+            "som_id": 1,
+            "level": 3,
+            "parent_id": 2,
+            "name": "臀部",
+            "caption": "宽厚结实的块状结构，表面平滑无纹理，呈哑光黑色。其形态向上连接脊柱，向下分叉承托左右后肢，构成身体后半部的核心支撑。",
+            "color": "红色",
+            "point_count": 1720,
+            "visible_ratio": 0.38313953488372093,
+            "children": [
+              {
+                "cluster_id": 8,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 5,
+                "name": "臀部主体",
+                "caption": "宽厚结实的块状结构，表面平滑无纹理，呈哑光黑色。向上连接脊柱，向下分叉承托左右后肢，构成身体后半部的核心支撑。",
+                "color": "红色",
+                "point_count": 1190,
+                "visible_ratio": 0.34705882352941175,
+                "children": []
+              },
+              {
+                "cluster_id": 7,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 5,
+                "name": "尾基部",
+                "caption": "位于臀部主体后下方的锥形结构，表面光滑，颜色同为哑光黑色。从臀部主体自然延伸而出，是长尾的起始部分，形态圆润且有力。",
+                "color": "绿色",
+                "point_count": 530,
+                "visible_ratio": 0.4981132075471698,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 4,
+            "som_id": 2,
+            "level": 3,
+            "parent_id": 2,
+            "name": "左后肢",
+            "caption": "粗壮弯曲的肢体，呈蓄力姿态，关节处有明显肌肉隆起。脚掌宽大，末端带三枚尖锐利爪，整体为统一哑光黑色，无额外装饰或纹理。",
+            "color": "绿色",
+            "point_count": 500,
+            "visible_ratio": 0.506,
+            "children": []
+          },
+          {
+            "cluster_id": 3,
+            "som_id": 3,
+            "level": 3,
+            "parent_id": 2,
+            "name": "右后肢",
+            "caption": "与左后肢对称的强壮肢体，同样呈弯曲蓄力状态，结构饱满有力。脚掌宽大，带三枚锋利爪尖，表面覆盖均匀哑光黑色材质，无可见伤痕或纹理。",
+            "color": "蓝色",
+            "point_count": 374,
+            "visible_ratio": 0.47593582887700536,
+            "children": []
+          }
+        ]
+      },
+      {
+        "cluster_id": 0,
+        "som_id": 3,
+        "level": 2,
+        "parent_id": 0,
+        "name": "头部与颈部",
+        "caption": "头部有角状突起和张开的利齿，颈部粗壮有力，背部延伸出尖锐背棘，整体造型凶猛，表面为光滑的黑色材质。",
+        "color": "蓝色",
+        "point_count": 1440,
+        "visible_ratio": 0.49722222222222223,
+        "children": [
+          {
+            "cluster_id": 1,
+            "som_id": 1,
+            "level": 3,
+            "parent_id": 0,
+            "name": "头部主体（含角状突起与上颚）",
+            "caption": "头部呈流线型，顶部和后颈分布多枚尖锐角状突起，表面光滑且为纯黑色。上颚结构坚固，与下颚形成咬合关系，整体造型充满攻击性。",
+            "color": "红色",
+            "point_count": 1024,
+            "visible_ratio": 0.447265625,
+            "children": [
+              {
+                "cluster_id": 2,
+                "som_id": 1,
+                "level": 4,
+                "parent_id": 1,
+                "name": "上颚与面部主体",
+                "caption": "呈坚固的三角锥形结构，前端尖锐，表面光滑无纹理，通体纯黑。与下颚形成张开咬合姿态，其后部与绿色角状突起区域紧密相连。",
+                "color": "红色",
+                "point_count": 642,
+                "visible_ratio": 0.4158878504672897,
+                "children": []
+              },
+              {
+                "cluster_id": 1,
+                "som_id": 2,
+                "level": 4,
+                "parent_id": 1,
+                "name": "头冠与角状突起",
+                "caption": "由多枚尖锐、不规则的角状突起构成，从头顶向后颈延伸，形态锋利。表面光滑，颜色为纯黑色，与红色上颚区域在顶部无缝衔接。",
+                "color": "绿色",
+                "point_count": 382,
+                "visible_ratio": 0.5732984293193717,
+                "children": []
+              }
+            ]
+          },
+          {
+            "cluster_id": 0,
+            "som_id": 2,
+            "level": 3,
+            "parent_id": 0,
+            "name": "下颚与利齿",
+            "caption": "下颚宽大厚实，前端布满密集尖锐的利齿，齿色略浅于黑色主体。其形态与上颚紧密咬合，构成凶猛的口部结构，表面材质光滑。",
+            "color": "绿色",
+            "point_count": 416,
+            "visible_ratio": 0.4567307692307692,
+            "children": []
+          }
+        ]
+      },
+      {
+        "cluster_id": 1,
+        "som_id": 4,
+        "level": 2,
+        "parent_id": 0,
+        "name": "长尾",
+        "caption": "细长且有力的尾巴从臀部向后延伸，末端逐渐变细，表面光滑呈黑色，作为平衡器官，其长度几乎与身体相当。",
+        "color": "黄色",
+        "point_count": 967,
+        "visible_ratio": 0.6680455015511892,
+        "children": [
+          {
+            "cluster_id": 4,
+            "som_id": 1,
+            "level": 4,
+            "parent_id": 1,
+            "name": "尾部主体",
+            "caption": "尾部主体呈细长圆柱形，从臀部平滑延伸，表面光滑无鳞片或纹理，通体黑色，结构坚实有力，末端逐渐收窄并与尾尖相连。",
+            "color": "红色",
+            "point_count": 773,
+            "visible_ratio": 0.5291073738680466,
+            "children": []
+          },
+          {
+            "cluster_id": 3,
+            "som_id": 2,
+            "level": 4,
+            "parent_id": 1,
+            "name": "尾尖",
+            "caption": "尾尖为尾部末端的尖锐部分，形态细长且逐渐收束至一个锐利的尖端，表面光滑呈纯黑色，与尾部主体无缝过渡，无额外装饰或分叉。",
+            "color": "绿色",
+            "point_count": 194,
+            "visible_ratio": 0.6752577319587629,
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "statistics": {
+    "total_clusters": 24,
+    "total_levels": 5,
+    "processing_time": 993.2698526382446
+  }
+}

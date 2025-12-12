@@ -28,6 +28,7 @@ from collections import deque
 import time
 
 import numpy as np
+import random
 from PIL import Image
 import cv2
 
@@ -63,22 +64,10 @@ class ClusterCaption:
     parent_id: Optional[int]
     name: str  # 简短名称，如 "头部"
     caption: str  # 详细描述
-    confidence: float  # 置信度 (0-1)
+    color: str  # 对应的颜色（用于 debug）
     point_count: int
     visible_ratio: float  # 在最佳视角下的可见比例
     children: List['ClusterCaption'] = field(default_factory=list)
-
-
-@dataclass
-class ViewQualityScore:
-    """单个视角的质量评分"""
-    view_idx: int
-    clarity_score: float  # 清晰度 (0-10)
-    completeness_score: float  # 完整性 (0-10)
-    occlusion_score: float  # 遮挡程度 (0-10, 越高越好=遮挡越少)
-    distinguishability_score: float  # 可区分性 (0-10)
-    overall_score: float  # 总分
-    reasoning: str
 
 
 @dataclass
@@ -88,18 +77,15 @@ class ClusterAnnotation:
     som_id: int
     name: str
     description: str
-    confidence: float
     color: str = ""
-    matched_features: List[str] = field(default_factory=list)  # Step 1 中对应的视觉特征
 
 
 @dataclass
 class ViewAnnotationResult:
     """单个视角的标注结果"""
     view_idx: int
-    quality_score: ViewQualityScore
+    view_direction: str  # 视角方向描述（如：正面平视）
     annotations: List[ClusterAnnotation]
-    unmatched_features: List[Dict[str, str]] = field(default_factory=list)  # 无法匹配的 Step 1 特征
 
 
 
@@ -181,11 +167,15 @@ class DashScopeClient(MLLMClient):
         # 确定是否启用思考模式 (优先使用调用时的参数，否则使用实例默认值)
         enable_thinking = kwargs.get('enable_thinking', self.enable_thinking)
         
+        # 获取 temperature 参数（用于控制输出多样性）
+        temperature = kwargs.get('temperature', 0.7)
+        
         # 构建请求参数
         kwargs_api = {
             "model": self.model,
             "messages": messages,
             "stream": True,  # 使用流式以支持 thinking
+            "temperature": temperature,
         }
         
         # 如果启用思考模式
@@ -279,224 +269,29 @@ def create_mllm_client(provider: str, api_key: str, model: Optional[str] = None,
         raise ValueError(f"不支持的 provider: {provider}")
 
 
-# ===================== Prompt 模板 =====================
+# ===================== Prompt 模板加载 =====================
 
-GLOBAL_CAPTION_PROMPT = """你是一个专业的 3D 物体分析专家。请分析以下多视角渲染图像，为这个 3D 物体提供：
+# Prompt 文件目录
+PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-1. **全局名称**: 简短的物体名称（2-5个字），如"龙形生物"、"机械手臂"、"古代建筑"
-2. **全局描述**: 对物体的整体描述（50-100字），包括：
-   - 物体的整体类别和形态
-   - 主要组成部分
-   - 显著的视觉特征
-   - 可能的用途或背景
-
-请以 JSON 格式输出：
-```json
-{
-    "global_name": "物体名称",
-    "global_caption": "详细描述...",
-    "main_parts": ["部件1", "部件2", ...],
-    "confidence": 0.95
-}
-```
-
-### 置信度评分标准 (Confidence Score)
-- **0.90 - 1.00 (非常确定)**: 特征极其清晰，典型且无歧义，你有 100% 的把握判断正确。
-- **0.70 - 0.89 (确定)**: 特征清晰可见，符合一般认知，主要结构明确，但可能存在微小的不确定性。
-- **0.50 - 0.69 (不太确定)**: 特征部分模糊、遮挡或有多种解释可能，只能基于现有信息做出最合理的推测。
-- **< 0.50 (猜测)**: 几乎无法辨认，严重模糊或遮挡，主要靠猜测。
-
-注意：
-- 如果某些视角图像质量较差或不清晰，请在分析时降低其权重
-- 描述应该客观准确，避免主观猜测
-- 如果无法确定物体类型，请如实说明
-- **专注于 3D 对象本身**：描述物体的形状、结构、组成部分、材质等固有属性
-- **忽略视角相关信息**：不要在描述中提及"从某视角看"、"正面/背面"等视角相关内容
-- **严格避免幻觉**：仅描述图像中清晰可见、确信存在的内容。对于模糊不清的细节，请直接忽略或如实描述为"不清晰"，**绝对不要编造**细节。"""
+def load_prompt(prompt_name: str) -> str:
+    """从文件加载 prompt 模板"""
+    prompt_path = PROMPTS_DIR / f"{prompt_name}.txt"
+    if prompt_path.exists():
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    else:
+        raise FileNotFoundError(f"Prompt 文件不存在: {prompt_path}")
 
 
-VISUAL_ANALYSIS_PROMPT = """你是一个专业的 3D 物体分析专家。请分析这张 3D 物体的渲染图像（Clean 视图），该图像展示了物体的一个特定视角。
+# 延迟加载 prompts（首次使用时加载）
+_PROMPT_CACHE = {}
 
-## 背景信息 (仅供参考)
-**注意：以下信息来自上一层级的分析，可能存在不准确的情况。请务必以当前图像中实际看到的视觉信息为准。如果图像内容与背景描述有冲突，请果断忽略背景描述，直接描述你所看到的。**
-- **物体全局名称**: {global_name}
-- **物体全局描述**: {global_caption}
-- **父节点名称**: {parent_name}
-- **父节点描述**: {parent_caption}
-- **当前层级**: Level {current_level}
-- **视角信息**: {view_info}
-
-## 任务
-请详细描述在该视角下，该 **3D 物体** 清晰可见的**主要子部件**和**视觉特征**。
-**核心要求**：
-- **描述 3D 物体本身**：请描述物体的形状、结构、材质、纹理等固有属性。
-- **避免 2D 图像描述**：严禁使用"图像左侧"、"可以看到"、"画面中"等描述，而是使用"物体左侧"、"具有..."、"表面覆盖..."等。
-
-请关注：
-1. **几何结构**: 能够区分出来的独立形状或突起。
-2. **外观细节**: 颜色、纹理、材质的变化。
-3. **空间关系**: 各部分之间的相对位置（如"上部"、"底座"、"外侧"等）。
-
-请以简洁的列表形式输出你的观察结果，不要包含任何 JSON 格式，只需自然语言描述。"""
-
-
-SOM_MATCHING_PROMPT = """你是一个专业的 3D 物体分析专家。当前任务是**将视觉特征准确映射到 3D 空间区域**（SoM 标注）。
-
-## 1. 核心参考信息 (语义与内容来源)
-**请务必综合利用以下信息，这是你理解物体和获取视觉细节的关键：**
-
-### A. 父节点约束 (语义上下文)
-当前分析的部件是 **{parent_name}** 的子结构。
-- **父节点描述**: {parent_caption}
-- **物体整体**: {global_name}
-- **指导原则**: 你的分析**必须**在父节点的语义范围内。例如，如果父节点是“头部”，那么子区域应当是“眼睛”、“嘴巴”等头部组件，而非“脚部”。请参考父节点描述来理解当前部件的功能和上下文。
-
-### B. 视觉特征分析 (内容核心)
-这是基于 Clean 视图（真实纹理渲染）的详细分析结果。**这是你获取形状、纹理、材质、颜色等外观信息的唯一真实来源**：
->>>
-{visual_analysis}
-<<<
-**重要**：最终的标注内容（Name 和 Description）**必须**源自上述视觉分析。不要编造视觉分析中未提及的细节。
-
-## 2. 空间定位参考 (SoM 视图)
-你将看到一张**SoM 视图** (颜色编码的点云图)。
-- **功能**: **仅用于界定区域范围和 ID**。
-- **警告**: 图中的颜色是随机分配的 ID 颜色，**绝不代表**物体真实颜色。图中也**没有**清晰的纹理细节。
-- **ID 映射表**:
-{color_mapping}
-
-## 3. 标注任务
-请执行 **“视觉-空间对齐”**：将 **[视觉特征分析]** 中描述的具体部件和细节，准确填入 **[SoM 视图]** 对应的颜色区域中。
-
-### 操作步骤
-1. **理解上下文**: 阅读父节点描述，明确当前部件在整体中的角色。
-2. **提取特征**: 从 [视觉特征分析] 中提取关键部件（如“金属外壳”、“红色按钮”）。
-3. **空间定位**: 观察 SoM 视图，根据**几何形状**和**空间位置**（如“顶部圆形突起”、“左侧长条状”），找到这些部件对应的颜色区域。
-4. **生成标注**:
-   - **名称**: 结合父节点语义和视觉分析，给该区域起一个准确的名称。
-   - **描述**: **必须**基于 [视觉特征分析] 中的描述撰写。描述该区域的真实材质、颜色和结构。
-   - **严禁**: 不要描述 SoM 图的伪色（如“这个区域是红色的”指 SoM 颜色），除非物体真实颜色也是红色。
-
-### 核心原则
-1. **区域含义多样性**: 一个 SoM 区域可能是一个完整部件、部件的一部分，或多个部件的集合。请根据实际覆盖范围如实描述。
-2. **包容性匹配**: 只要 [视觉特征分析] 中的某个特征在空间上落入某颜色区域，就应包含在该区域的描述中。
-3. **未匹配处理**: 只有当某个视觉特征在 SoM 图中完全对应**灰色/背景/无编号区域**时，才列入 `unmatched_features`。请仔细检查，不要因为颜色区域包含了额外部分就错误地将其归为未匹配。
-
-### 输出格式
-请以 JSON 格式输出：
-```json
-{{
-    "quality_assessment": {{
-        "clarity_score": 8,
-        "completeness_score": 7,
-        "occlusion_score": 6,
-        "distinguishability_score": 8,
-        "overall_score": 7.25,
-        "reasoning": "简要评估图像质量..."
-    }},
-    "annotations": [
-        {{
-            "som_id": 1,
-            "color": "红色",
-            "name": "准确名称",
-            "description": "详细描述 (基于视觉分析)",
-            "confidence": 0.85,
-            "matched_features": ["对应视觉分析中的特征A", "对应特征B"]
-        }},
-        ...
-    ],
-    "unmatched_features": [
-        {{"feature": "视觉分析中提到的背景", "reason": "对应SoM图中的灰色背景区域"}},
-        {{"feature": "底部的黑色底座", "reason": "在SoM图中该位置为无编号的灰色区域，未被分割为独立部件"}}
-    ]
-}}
-```
-
-### 评分标准 (请严格按照以下标准打分)
-
-#### 1. Clarity Score (清晰度)
-- **0-3分**: 图像严重模糊、像素化严重或噪点过多，无法辨认细节结构。
-- **4-6分**: 物体轮廓可见，但表面纹理模糊，或存在轻微的渲染伪影。
-- **7-8分**: 图像清晰，物体主要结构和纹理细节清晰可见，边缘锐利。
-- **9-10分**: 极其清晰，高分辨率感，微小的纹理和材质细节都能完美呈现。
-
-#### 2. Completeness Score (完整性)
-- **0-3分**: 仅可见物体的一小部分（<30%），关键结构缺失。
-- **4-6分**: 物体主体部分可见（30%-70%），但部分关键区域被截断在图像边缘之外。
-- **7-8分**: 物体绝大部分可见（>90%），仅边缘细微部分可能被切掉。
-- **9-10分**: 物体完全包含在图像视野内，构图完美完整。
-
-#### 3. Occlusion Score (遮挡程度)
-*注意：分数越高代表遮挡越少（越好）。*
-- **0-3分**: 大部分区域（>70%）被其他物体或自身部件严重遮挡，无法看清主体。
-- **4-6分**: 存在明显遮挡（30%-50%），影响了对部分结构的观察。
-- **7-8分**: 仅有轻微遮挡（<15%），关键特征未受影响。
-- **9-10分**: 完全无遮挡，目标区域一览无余。
-
-#### 4. Distinguishability Score (可区分性)
-- **0-3分**: 目标区域与背景混杂，或特征过于普通，难以提取有效特征。
-- **4-6分**: 能看出是独立部分，但缺乏显著的几何或纹理特征。
-- **7-8分**: 具有明确的形状或纹理特征，易于描述和识别。
-- **9-10分**: 特征极具辨识度（如独特的标志、复杂的机械结构等），一眼即可锁定。
-
-#### 5. Confidence Score (置信度 - 针对每个标注)
-- **0.90 - 1.00 (非常确定)**: 特征极其清晰，典型且无歧义，你有 100% 的把握判断正确。
-- **0.70 - 0.89 (确定)**: 特征清晰可见，符合一般认知，主要结构明确，但可能存在微小的不确定性。
-- **0.50 - 0.69 (不太确定)**: 特征部分模糊、遮挡或有多种解释可能，只能基于现有信息做出最合理的推测。
-- **< 0.50 (猜测)**: 几乎无法辨认，严重模糊或遮挡，主要靠猜测。
-"""
-
-
-MERGE_ANNOTATIONS_PROMPT = """你是一个专业的 3D 物体分析专家。请整合来自多个视角的标注结果。
-
-## 背景信息 (仅供参考)
-注意：以下名称仅供参考，如果多视角标注结果中出现了更准确的描述，请优先采信标注结果。
-- **物体全局名称**: {global_name}
-- **父节点名称**: {parent_name}
-- **子部件数量**: {num_children}
-
-## 多视角标注结果
-{multi_view_annotations}
-
-## 任务
-请基于各视角的图像质量评分和标注内容，为每个子部件生成最终的综合标注。
-
-### 整合原则
-1. **优先采信高质量视角**: 图像质量分数高的视角权重更大
-2. **信息互补**: 不同视角可能看到不同细节，应综合考虑
-3. **冲突处理**: 如果不同视角的描述有矛盾，优先相信质量更高的视角
-4. **置信度计算**: 最终置信度应综合考虑各视角的置信度和图像质量
-5. **去伪存真**：如果在某些低质量视角中出现了疑似幻觉的描述（与其他高质量视角严重不符），请果断舍弃。
-
-### 输出格式
-```json
-{{
-    "merged_annotations": [
-        {{
-            "som_id": 1,
-            "name": "最终确定的名称",
-            "caption": "综合多视角信息的详细描述（30-80字）",
-            "confidence": 0.85,
-            "best_view_idx": 2,
-            "reasoning": "选择该结论的原因"
-        }},
-        ...
-    ],
-    "annotation_notes": "整体标注过程中的注意事项或不确定性说明"
-}}
-```
-
-### 置信度评分标准 (Confidence Score)
-- **0.90 - 1.00 (非常确定)**: 特征极其清晰，典型且无歧义，你有 100% 的把握判断正确。
-- **0.70 - 0.89 (确定)**: 特征清晰可见，符合一般认知，主要结构明确，但可能存在微小的不确定性。
-- **0.50 - 0.69 (不太确定)**: 特征部分模糊、遮挡或有多种解释可能，只能基于现有信息做出最合理的推测。
-- **< 0.50 (猜测)**: 几乎无法辨认，严重模糊或遮挡，主要靠猜测。
-
-### 重要：描述内容要求
-- **专注于 3D 对象本身**：最终 caption 应描述部件的形状、结构、功能、材质等固有属性
-- **忽略视角相关信息**：不要在 caption 中提及任何视角、角度、可见性等信息
-- **描述应具有普遍性**：生成的描述应该是对该部件的客观、全面的描述，而非特定视角下的观察结果
-- **严格避免幻觉**：最终输出的描述必须是所有视角中**证据确凿**的交集。对于不确定的细节，宁可不写，也不要猜测。"""
+def get_prompt(prompt_name: str) -> str:
+    """获取 prompt（带缓存）"""
+    if prompt_name not in _PROMPT_CACHE:
+        _PROMPT_CACHE[prompt_name] = load_prompt(prompt_name)
+    return _PROMPT_CACHE[prompt_name]
 
 
 # ===================== 核心功能函数 =====================
@@ -662,6 +457,200 @@ def optimize_distance_for_cluster(
                 best_dist = dist
     
     return best_dist
+
+
+def get_points_mask(points_2d: np.ndarray, image_size: int, k_size: int = 31) -> np.ndarray:
+    """
+    从 2D 点生成平滑掩码
+    参考 visualize_pointcloud_gradio.py 的实现
+    """
+    H, W = image_size, image_size
+    mask = np.zeros((H, W), dtype=np.uint8)
+    
+    # 绘制初始点
+    for x, y in points_2d:
+        if 0 <= x < W and 0 <= y < H:
+            cv2.circle(mask, (int(x), int(y)), radius=8, color=255, thickness=-1)
+            
+    # 闭运算连接空隙
+    kernel = np.ones((25, 25), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    
+    # 高斯模糊 + 阈值化
+    mask_blurred = cv2.GaussianBlur(mask, (k_size, k_size), 0)
+    _, mask_smooth = cv2.threshold(mask_blurred, 127, 255, cv2.THRESH_BINARY)
+    
+    return mask_smooth
+
+
+def get_robust_mask_from_far_view(
+    points: np.ndarray,
+    direction: np.ndarray,
+    center: np.ndarray,
+    current_dist: float,
+    intrinsic,
+    image_size: int,
+    zoom_factor: float = 3.0
+) -> np.ndarray:
+    """
+    利用"远距离视角"生成致密 Mask，然后放大适配当前视角
+    解决近距离下点云稀疏导致的 Mask 破碎/颗粒化问题
+    参考 visualize_pointcloud_gradio.py 的实现
+    """
+    # 虚拟拉远相机
+    far_dist = current_dist * zoom_factor
+    eye_far = center + direction * far_dist
+    extrinsic_far = create_camera_extrinsic_from_viewpoint(eye_far, center=center)
+    
+    # 在远距离下投影
+    pixel_coords, depths, valid_mask = project_points_to_image_with_depth(
+        points, intrinsic, extrinsic_far, image_size=image_size
+    )
+    
+    valid_pixels = pixel_coords[valid_mask]
+    
+    if len(valid_pixels) == 0:
+        return np.zeros((image_size, image_size), dtype=np.uint8)
+        
+    # 生成远距离 Mask
+    mask_far = get_points_mask(valid_pixels, image_size, k_size=15) 
+    
+    # 将 Mask 放大 zoom_factor 倍
+    H, W = image_size, image_size
+    center_x, center_y = W / 2.0, H / 2.0
+    
+    M = np.array([
+        [zoom_factor, 0, (1 - zoom_factor) * center_x],
+        [0, zoom_factor, (1 - zoom_factor) * center_y]
+    ], dtype=np.float32)
+    
+    mask_near = cv2.warpAffine(mask_far, M, (W, H), flags=cv2.INTER_LINEAR)
+    _, mask_near = cv2.threshold(mask_near, 127, 255, cv2.THRESH_BINARY)
+    
+    return mask_near
+
+
+def create_som_overlay_image(
+    clean_image: np.ndarray,
+    points: np.ndarray,
+    child_labels: np.ndarray,
+    child_ids: List[int],
+    color_map: Dict[int, List[int]],
+    viewpoint: np.ndarray,
+    center: np.ndarray,
+    depth_map: np.ndarray,
+    intrinsic,
+    image_size: int = 800,
+    alpha: float = 0.5,
+    dim_background: bool = True,
+    draw_contours: bool = True
+) -> np.ndarray:
+    """
+    在 GLB 渲染图上叠加透明颜色蒙版（SoM 风格）
+    
+    参数:
+        clean_image: GLB 渲染的原始图像 (RGB)
+        points: 所有点云坐标 (N, 3)
+        child_labels: 所有点的聚类标签 (N,)
+        child_ids: 兄弟簇的 ID 列表
+        color_map: {cluster_id: [R, G, B]} 颜色映射
+        viewpoint: 相机位置
+        center: 观察中心点
+        depth_map: 深度图（用于遮挡检测）
+        intrinsic: 相机内参
+        image_size: 图像尺寸
+        alpha: 蒙版透明度 (0~1, 越大越不透明)
+        dim_background: 是否将非簇区域变暗
+        draw_contours: 是否绘制轮廓
+    
+    返回:
+        叠加蒙版后的图像
+    """
+    H, W = image_size, image_size
+    extrinsic = create_camera_extrinsic_from_viewpoint(viewpoint, center=center)
+    direction = (viewpoint - center)
+    direction = direction / np.linalg.norm(direction)
+    dist = np.linalg.norm(viewpoint - center)
+    
+    # 收集所有兄弟簇的点索引
+    sibling_mask = np.isin(child_labels, child_ids)
+    sibling_points = points[sibling_mask]
+    sibling_child_ids = child_labels[sibling_mask]
+    
+    # 投影所有兄弟簇的点
+    pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
+        sibling_points, intrinsic, extrinsic, image_size=image_size
+    )
+    
+    # 检查遮挡
+    is_visible = np.zeros(len(sibling_points), dtype=bool)
+    fov_indices = np.where(valid_mask_fov)[0]
+    
+    if len(fov_indices) > 0:
+        vis_sub = check_visible_points_with_depth(
+            sibling_points[fov_indices],
+            pixel_coords[fov_indices],
+            depths[fov_indices],
+            depth_map,
+            use_relative_threshold=True,
+            relative_threshold_ratio=0.02
+        )
+        is_visible[fov_indices] = vis_sub
+    
+    # 为每个子簇生成蒙版
+    child_masks = []
+    for cid in child_ids:
+        c_mask = (sibling_child_ids == cid)
+        c_visible = is_visible & c_mask
+        c_points_vis = sibling_points[c_visible]
+        
+        if len(c_points_vis) > 0:
+            # 使用远距离视角生成更鲁棒的蒙版
+            mask = get_robust_mask_from_far_view(
+                c_points_vis, direction, center, dist, intrinsic, image_size, zoom_factor=2.0
+            )
+        else:
+            mask = np.zeros((H, W), dtype=np.uint8)
+        
+        child_masks.append(mask)
+    
+    # 合并所有蒙版（用于背景暗化）
+    combined_mask = np.zeros((H, W), dtype=np.uint8)
+    for mask in child_masks:
+        combined_mask = cv2.bitwise_or(combined_mask, mask)
+    
+    # 创建结果图像
+    result_img = clean_image.copy().astype(np.float32)
+    
+    # 背景暗化
+    if dim_background:
+        fg_bool = combined_mask > 0
+        result_img[~fg_bool] *= 0.3
+    
+    # 叠加每个子簇的颜色蒙版
+    overlay = result_img.copy()
+    for i, (mask, cid) in enumerate(zip(child_masks, child_ids)):
+        if mask is None or np.sum(mask) == 0:
+            continue
+        
+        color = np.array(color_map[cid])
+        mask_bool = mask > 0
+        
+        # 叠加半透明颜色
+        overlay[mask_bool] = overlay[mask_bool] * (1 - alpha) + color * alpha
+        
+        # 绘制轮廓
+        if draw_contours:
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            smooth_contours = []
+            for cnt in contours:
+                epsilon = 0.005 * cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, epsilon, True)
+                smooth_contours.append(approx)
+            cv2.drawContours(overlay, smooth_contours, -1, color.tolist(), 2)
+    
+    result_img = np.clip(overlay, 0, 255).astype(np.uint8)
+    return result_img
 
 
 def render_pointcloud_som_image(
@@ -949,21 +938,23 @@ def generate_sibling_views(
     
     candidates.sort(key=lambda x: x['score'], reverse=True)
     
-    # 筛选视角
-    MIN_WORST_CHILD_VIS = 0.15
-    MIN_MEAN_CHILD_VIS = 0.35
+    valid_candidates = candidates
+
+    # # 筛选视角
+    # MIN_WORST_CHILD_VIS = 0.15
+    # MIN_MEAN_CHILD_VIS = 0.35
     
-    valid_candidates = [c for c in candidates 
-                       if c['stats']['min_child'] >= MIN_WORST_CHILD_VIS 
-                       and c['stats']['mean_child'] >= MIN_MEAN_CHILD_VIS]
+    # valid_candidates = [c for c in candidates 
+    #                    if c['stats']['min_child'] >= MIN_WORST_CHILD_VIS 
+    #                    and c['stats']['mean_child'] >= MIN_MEAN_CHILD_VIS]
     
-    if not valid_candidates:
-        valid_candidates = [c for c in candidates 
-                          if c['stats']['min_child'] >= 0.08 
-                          and c['stats']['mean_child'] >= 0.20]
+    # if not valid_candidates:
+    #     valid_candidates = [c for c in candidates 
+    #                       if c['stats']['min_child'] >= 0.08 
+    #                       and c['stats']['mean_child'] >= 0.20]
     
-    if not valid_candidates and candidates:
-        valid_candidates = candidates[:num_views]
+    # if not valid_candidates and candidates:
+    #     valid_candidates = candidates[:num_views]
     
     # 选择多样化视角
     DISTINCTNESS_THRESHOLD = 0.7
@@ -984,15 +975,39 @@ def generate_sibling_views(
     # ========== 关键修复：分离 GLB 渲染和点云渲染，避免渲染器冲突 ==========
     # 参考 visualize_pointcloud_gradio.py 中的实现
     
-    # Step 1: 先渲染所有 Clean 视图 (GLB)
+    # Step 1: 先渲染所有 Clean 视图 (GLB) 和 SoM Overlay 视图
     renderer_final = Open3DRenderer(width=image_size, height=image_size)
     renderer_final.setup()
     renderer_final.upload_model(model)
     
+    # 准备相机内参（用于 SoM overlay 生成）
+    fov_final = 60.0
+    fx_final = image_size / (2.0 * np.tan(np.radians(fov_final) / 2.0))
+    cam_params_final = {
+        'intrinsic': {
+            'width': image_size, 'height': image_size,
+            'fx': fx_final, 'fy': fx_final,
+            'cx': image_size / 2.0, 'cy': image_size / 2.0,
+            'fov': fov_final
+        }
+    }
+    intrinsic_final = create_camera_intrinsic_from_params(cam_params_final)
+    
     clean_images = []
+    som_overlay_images = []  # 新增：在 GLB 渲染图上叠加蒙版的 SoM 图像
+    
     for view in final_views:
-        clean_img, _ = renderer_final.render_view(view['eye'], center=group_center)
+        # 渲染 Clean 图像和深度图
+        clean_img, depth_map = renderer_final.render_view(view['eye'], center=group_center, return_depth=True)
         clean_images.append(clean_img)
+        
+        # 生成 SoM Overlay 图像（在 clean_img 上叠加透明颜色蒙版）
+        som_overlay_img = create_som_overlay_image(
+            clean_img, points, child_labels, child_ids, color_map,
+            view['eye'], group_center, depth_map, intrinsic_final,
+            image_size=image_size, alpha=0.5, dim_background=True, draw_contours=True
+        )
+        som_overlay_images.append(som_overlay_img)
     
     # Step 2: 清理 GLB 渲染器（重要：必须在点云渲染之前清理）
     renderer_final.cleanup()
@@ -1002,6 +1017,7 @@ def generate_sibling_views(
     output_views = []
     for i, view in enumerate(final_views):
         clean_img = clean_images[i]
+        som_overlay_img = som_overlay_images[i]  # 新增
         
         # 渲染 SoM 图像（点云聚类可视化）
         som_img = render_pointcloud_som_image(
@@ -1031,6 +1047,7 @@ def generate_sibling_views(
         output_views.append({
             'clean_image': clean_img,
             'som_image': som_img,
+            'som_overlay_image': som_overlay_img,  # 新增：GLB 渲染图 + 透明蒙版叠加
             'view_info': view_info,
             'child_ids': child_ids,
             'som_id_map': som_id_map,
@@ -1074,8 +1091,11 @@ def call_mllm_for_global_caption(
     images: List[np.ndarray]
 ) -> Dict[str, Any]:
     """调用 MLLM 获取全局标注"""
+    # 从文件加载 prompt
+    global_caption_prompt = get_prompt("global_caption")
+    
     # 构建消息
-    content = [{"type": "text", "text": GLOBAL_CAPTION_PROMPT}]
+    content = [{"type": "text", "text": global_caption_prompt}]
     
     for i, img in enumerate(images):
         img_b64 = client.encode_image(img)
@@ -1088,7 +1108,7 @@ def call_mllm_for_global_caption(
     messages = [{"role": "user", "content": content}]
     
     print(f"\n{'='*20} MLLM INPUT (Global Caption) {'='*20}", flush=True)
-    print(GLOBAL_CAPTION_PROMPT, flush=True)
+    print(global_caption_prompt, flush=True)
     print(f"[附带 {len(images)} 张多视角图像]", flush=True)
     print(f"{'='*60}\n", flush=True)
     
@@ -1112,8 +1132,7 @@ def call_mllm_for_global_caption(
     return {
         "global_name": "未知物体",
         "global_caption": response,
-        "main_parts": [],
-        "confidence": 0.5
+        "main_parts": []
     }
 
 
@@ -1160,6 +1179,446 @@ def get_view_direction_description(azimuth: float, elevation: float) -> str:
     return f"{azimuth_desc}，{elev_desc}"
 
 
+# 全局颜色名称映射
+COLOR_NAMES = {
+    (255, 0, 0): "红色",
+    (0, 255, 0): "绿色",
+    (0, 0, 255): "蓝色",
+    (255, 255, 0): "黄色",
+    (255, 0, 255): "品红色",
+    (0, 255, 255): "青色",
+    (255, 128, 0): "橙色",
+    (128, 0, 255): "蓝紫色",
+    (0, 255, 128): "春绿色",
+    (255, 0, 128): "玫红色",
+    (128, 255, 0): "酸橙色",
+    (0, 128, 255): "蔚蓝色",
+    (128, 0, 0): "深红色",
+    (0, 128, 0): "深绿色",
+    (0, 0, 128): "深蓝色",
+    (128, 128, 0): "橄榄色",
+    (128, 0, 128): "紫色",
+    (0, 128, 128): "蓝绿色",
+    (165, 42, 42): "棕色",
+    (255, 215, 0): "金色",
+}
+
+
+def get_color_name(rgb: List[int]) -> str:
+    """获取 RGB 颜色对应的中文名称"""
+    return COLOR_NAMES.get(tuple(rgb), f"RGB{tuple(rgb)}")
+
+
+def get_color_mapping_str(child_ids: List[int], som_id_map: Dict[int, int], color_map: Dict[int, List[int]]) -> str:
+    """生成颜色映射说明字符串"""
+    color_mapping_lines = []
+    for cid in child_ids:
+        som_id = som_id_map[cid]
+        color_name = get_color_name(color_map[cid])
+        color_mapping_lines.append(f"  - **编号 {som_id}**: {color_name} 区域")
+    return "\n".join(color_mapping_lines)
+
+
+def call_mllm_for_multiview_part_naming(
+    client: MLLMClient,
+    views: List[Dict],
+    global_name: str,
+    global_caption: str,
+    parent_name: str,
+    parent_caption: str,
+    child_ids: List[int],
+    som_id_map: Dict[int, int],
+    color_map: Dict[int, List[int]],
+    num_rounds: int = 3
+) -> Tuple[List[Dict], Dict]:
+    """
+    调用 MLLM 进行多视角部件命名（三阶段流程，带多轮采样）
+    
+    流程：
+    1. Step 1a: 送入多视角点云 SoM 图像，获取基于几何结构的命名（3轮，每轮 shuffle）
+    2. Step 1b: 送入多视角 GLB 叠加蒙版图像，获取基于纹理的命名（3轮，每轮 shuffle）
+    3. Step 1c: 送入拼接图，综合所有结果得到最终命名
+    
+    参数:
+        num_rounds: 每个阶段的采样轮数（默认 3）
+    
+    返回:
+        part_names: 部件名称列表
+        log_entry: 日志记录
+    """
+    # 生成颜色映射说明
+    color_mapping_str = get_color_mapping_str(child_ids, som_id_map, color_map)
+    
+    # 收集日志
+    log_entry = {
+        "type": "multiview_part_naming_3stage_multiround",
+        "num_views": len(views),
+        "num_rounds": num_rounds,
+        "stages": []
+    }
+    
+    # 不同轮次使用不同的 temperature 增加多样性
+    temperatures = [0.4,0.8,1.2]
+    
+    # 格式化命名结果的辅助函数
+    def format_naming_result(part_names_list, round_idx=None):
+        if not part_names_list:
+            return "（无法解析结果）"
+        lines = []
+        for p in part_names_list:
+            lines.append(f"  - 编号 {p.get('som_id', '?')} [{p.get('color', '?')}]: {p.get('name', '未知')}")
+        return "\n".join(lines)
+    
+    # 解析 JSON 响应的辅助函数
+    def parse_naming_response(response: str) -> List[Dict]:
+        try:
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            if json_start >= 0 and json_end > json_start:
+                result = json.loads(response[json_start:json_end])
+                return result.get('part_names', [])
+        except (json.JSONDecodeError, KeyError):
+            pass
+        return []
+    
+    # ==================== Step 1a: 点云 SoM 命名 (多轮) ====================
+    all_pointcloud_results = []  # 存储所有轮次的结果
+    
+    step1a_prompt_template = get_prompt("step1a_pointcloud_som_naming")
+    step1a_prompt = step1a_prompt_template.format(
+        global_name=global_name,
+        global_caption=global_caption,
+        parent_name=parent_name,
+        parent_caption=parent_caption,
+        color_mapping=color_mapping_str
+    )
+    
+    for round_idx in range(num_rounds):
+        print(f"\n{'='*20} Step 1a 轮次 {round_idx+1}/{num_rounds}: 点云 SoM 命名 {'='*20}", flush=True)
+        
+        # Shuffle 视图顺序
+        shuffled_indices = list(range(len(views)))
+        random.shuffle(shuffled_indices)
+        shuffled_views = [views[i] for i in shuffled_indices]
+        
+        # 构建消息：只包含点云 SoM 图像（按 shuffle 后的顺序）
+        content_1a = [{"type": "text", "text": step1a_prompt}]
+        for i, view in enumerate(shuffled_views):
+            som_img = view.get('som_image')
+            if som_img is None:
+                continue
+            img_b64 = client.encode_image(som_img)
+            view_direction = get_view_direction_description(
+                view['view_info']['azimuth'],
+                view['view_info']['elevation']
+            )
+            content_1a.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+            })
+            content_1a.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+        
+        messages_1a = [{"role": "user", "content": content_1a}]
+        
+        print(f"[轮次 {round_idx+1}] Temperature: {temperatures[round_idx % len(temperatures)]}", flush=True)
+        print(f"[轮次 {round_idx+1}] 视图顺序 (原索引): {shuffled_indices}", flush=True)
+        print(f"[附带 {len(shuffled_views)} 张多视角点云 SoM 图像]", flush=True)
+        
+        response_1a = client.call(
+            messages_1a, 
+            enable_thinking=False,
+            temperature=temperatures[round_idx % len(temperatures)]
+        )
+        
+        print(f"\n{'='*20} Step 1a 轮次 {round_idx+1} OUTPUT {'='*20}", flush=True)
+        print(response_1a, flush=True)
+        
+        # 解析结果
+        pointcloud_part_names = parse_naming_response(response_1a)
+        all_pointcloud_results.append({
+            "round": round_idx + 1,
+            "temperature": temperatures[round_idx % len(temperatures)],
+            "shuffle_order": shuffled_indices,
+            "response": response_1a,
+            "parsed_part_names": pointcloud_part_names
+        })
+        
+        log_entry["stages"].append({
+            "stage": f"1a_pointcloud_som_round{round_idx+1}",
+            "round": round_idx + 1,
+            "temperature": temperatures[round_idx % len(temperatures)],
+            "shuffle_order": shuffled_indices,
+            "prompt": step1a_prompt,
+            "response": response_1a,
+            "parsed_part_names": pointcloud_part_names
+        })
+    
+    # ==================== Step 1b: GLB 叠加蒙版命名 (多轮) ====================
+    all_glb_overlay_results = []  # 存储所有轮次的结果
+    
+    step1b_prompt_template = get_prompt("step1b_glb_overlay_naming")
+    step1b_prompt = step1b_prompt_template.format(
+        global_name=global_name,
+        global_caption=global_caption,
+        parent_name=parent_name,
+        parent_caption=parent_caption,
+        color_mapping=color_mapping_str
+    )
+    
+    for round_idx in range(num_rounds):
+        print(f"\n{'='*20} Step 1b 轮次 {round_idx+1}/{num_rounds}: GLB 叠加蒙版命名 {'='*20}", flush=True)
+        
+        # Shuffle 视图顺序
+        shuffled_indices = list(range(len(views)))
+        random.shuffle(shuffled_indices)
+        shuffled_views = [views[i] for i in shuffled_indices]
+        
+        # 构建消息：只包含 GLB 叠加蒙版图像（按 shuffle 后的顺序）
+        content_1b = [{"type": "text", "text": step1b_prompt}]
+        for i, view in enumerate(shuffled_views):
+            som_overlay_img = view.get('som_overlay_image')
+            if som_overlay_img is None:
+                continue
+            img_b64 = client.encode_image(som_overlay_img)
+            view_direction = get_view_direction_description(
+                view['view_info']['azimuth'],
+                view['view_info']['elevation']
+            )
+            content_1b.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+            })
+            content_1b.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+        
+        messages_1b = [{"role": "user", "content": content_1b}]
+        
+        print(f"[轮次 {round_idx+1}] Temperature: {temperatures[round_idx % len(temperatures)]}", flush=True)
+        print(f"[轮次 {round_idx+1}] 视图顺序 (原索引): {shuffled_indices}", flush=True)
+        print(f"[附带 {len(shuffled_views)} 张多视角 GLB 叠加蒙版图像]", flush=True)
+        
+        response_1b = client.call(
+            messages_1b, 
+            enable_thinking=False,
+            temperature=temperatures[round_idx % len(temperatures)]
+        )
+        
+        print(f"\n{'='*20} Step 1b 轮次 {round_idx+1} OUTPUT {'='*20}", flush=True)
+        print(response_1b, flush=True)
+        
+        # 解析结果
+        glb_overlay_part_names = parse_naming_response(response_1b)
+        all_glb_overlay_results.append({
+            "round": round_idx + 1,
+            "temperature": temperatures[round_idx % len(temperatures)],
+            "shuffle_order": shuffled_indices,
+            "response": response_1b,
+            "parsed_part_names": glb_overlay_part_names
+        })
+        
+        log_entry["stages"].append({
+            "stage": f"1b_glb_overlay_round{round_idx+1}",
+            "round": round_idx + 1,
+            "temperature": temperatures[round_idx % len(temperatures)],
+            "shuffle_order": shuffled_indices,
+            "prompt": step1b_prompt,
+            "response": response_1b,
+            "parsed_part_names": glb_overlay_part_names
+        })
+    
+    # ==================== Step 1c: 综合命名 ====================
+    print(f"\n{'='*20} Step 1c: 综合所有轮次结果 {'='*20}", flush=True)
+    
+    # 格式化所有轮次的点云 SoM 结果
+    pointcloud_all_rounds_formatted = []
+    for r in all_pointcloud_results:
+        round_str = f"**轮次 {r['round']}** (Temperature={r['temperature']}):\n"
+        round_str += format_naming_result(r['parsed_part_names'])
+        pointcloud_all_rounds_formatted.append(round_str)
+    pointcloud_naming_formatted = "\n\n".join(pointcloud_all_rounds_formatted) if pointcloud_all_rounds_formatted else "（无法解析结果）"
+    
+    # 格式化所有轮次的 GLB 叠加蒙版结果
+    glb_all_rounds_formatted = []
+    for r in all_glb_overlay_results:
+        round_str = f"**轮次 {r['round']}** (Temperature={r['temperature']}):\n"
+        round_str += format_naming_result(r['parsed_part_names'])
+        glb_all_rounds_formatted.append(round_str)
+    glb_overlay_naming_formatted = "\n\n".join(glb_all_rounds_formatted) if glb_all_rounds_formatted else "（无法解析结果）"
+    
+    step1c_prompt_template = get_prompt("step1c_merge_naming")
+    step1c_prompt = step1c_prompt_template.format(
+        global_name=global_name,
+        global_caption=global_caption,
+        parent_name=parent_name,
+        parent_caption=parent_caption,
+        color_mapping=color_mapping_str,
+        pointcloud_naming_result=pointcloud_naming_formatted,
+        glb_overlay_naming_result=glb_overlay_naming_formatted
+    )
+    
+    # 构建消息：包含拼接图像（点云 SoM | GLB 叠加蒙版）
+    content_1c = [{"type": "text", "text": step1c_prompt}]
+    for i, view in enumerate(views):
+        som_img = view.get('som_image')
+        som_overlay_img = view.get('som_overlay_image')
+        
+        if som_img is None or som_overlay_img is None:
+            continue
+        
+        # 拼接图像
+        combined_img = np.concatenate([som_img, som_overlay_img], axis=1)
+        img_b64 = client.encode_image(combined_img)
+        view_direction = get_view_direction_description(
+            view['view_info']['azimuth'],
+            view['view_info']['elevation']
+        )
+        content_1c.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+        })
+        content_1c.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}] (左: 点云SoM, 右: GLB叠加蒙版)"})
+    
+    messages_1c = [{"role": "user", "content": content_1c}]
+    
+    print(step1c_prompt, flush=True)
+    print(f"[附带 {len(views)} 张多视角拼接图像]", flush=True)
+    print(f"[综合 Step 1a 的 {num_rounds} 轮结果 和 Step 1b 的 {num_rounds} 轮结果]", flush=True)
+    
+    response_1c = client.call(messages_1c, enable_thinking=False, temperature=0.3)
+    
+    print(f"\n{'='*20} Step 1c OUTPUT (最终命名) {'='*20}", flush=True)
+    print(response_1c, flush=True)
+    print(f"{'='*60}\n", flush=True)
+    
+    # 解析最终结果
+    part_names = parse_naming_response(response_1c)
+    
+    if part_names:
+        log_entry["final_parsed_result"] = {"part_names": part_names}
+    else:
+        log_entry['parse_error'] = "Failed to parse final response"
+        # 如果最终结果解析失败，尝试使用各轮次中最完整的结果
+        # 优先使用 GLB 叠加蒙版的结果（纹理信息更丰富）
+        for r in all_glb_overlay_results:
+            if r['parsed_part_names']:
+                part_names = r['parsed_part_names']
+                break
+        if not part_names:
+            for r in all_pointcloud_results:
+                if r['parsed_part_names']:
+                    part_names = r['parsed_part_names']
+                    break
+    
+    log_entry["stages"].append({
+        "stage": "1c_merge",
+        "prompt": step1c_prompt,
+        "response": response_1c,
+        "final_part_names": part_names
+    })
+    
+    # 记录所有轮次的结果摘要
+    log_entry["all_pointcloud_results"] = all_pointcloud_results
+    log_entry["all_glb_overlay_results"] = all_glb_overlay_results
+    
+    return part_names, log_entry
+
+
+def call_mllm_for_multiview_part_captioning(
+    client: MLLMClient,
+    views: List[Dict],
+    global_name: str,
+    global_caption: str,
+    parent_name: str,
+    parent_caption: str,
+    part_names: List[Dict],
+    child_ids: List[int],
+    som_id_map: Dict[int, int],
+    color_map: Dict[int, List[int]]
+) -> Tuple[List[Dict], Dict]:
+    """
+    调用 MLLM 进行多视角部件描述（Step 2）
+    一次性发送所有视角的拼接图像，综合生成每个部件的详细描述
+    
+    返回:
+        annotations: 部件标注列表
+        log_entry: 日志记录
+    """
+    # 格式化部件名称信息
+    part_names_lines = []
+    for part in part_names:
+        part_names_lines.append(
+            f"  - **编号 {part.get('som_id', '?')}**: {part.get('color', '未知颜色')} 区域 → {part.get('name', '未知部件')}"
+        )
+    part_names_info = "\n".join(part_names_lines) if part_names_lines else "未能识别部件名称"
+    
+    # 加载 prompt 模板
+    step2_prompt_template = get_prompt("step2_multiview_part_captioning")
+    step2_prompt = step2_prompt_template.format(
+        global_name=global_name,
+        global_caption=global_caption,
+        parent_name=parent_name,
+        parent_caption=parent_caption,
+        part_names_info=part_names_info
+    )
+    
+    # 构建消息内容：文本 + 多张拼接图像 (Clean|SoM)
+    content = [{"type": "text", "text": step2_prompt}]
+    
+    for i, view in enumerate(views):
+        if view.get('som_image') is None:
+            continue
+        
+        # 拼接 Clean 和 SoM 图像
+        combined_image = np.concatenate([view['clean_image'], view['som_image']], axis=1)
+        img_b64 = client.encode_image(combined_image)
+        view_direction = get_view_direction_description(
+            view['view_info']['azimuth'],
+            view['view_info']['elevation']
+        )
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+        })
+        content.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+    
+    messages = [{"role": "user", "content": content}]
+    
+    print(f"\n{'='*20} MLLM INPUT (Multiview Part Captioning) {'='*20}", flush=True)
+    print(step2_prompt, flush=True)
+    print(f"[附带 {len(views)} 张多视角拼接图像]", flush=True)
+    print(f"{'='*60}\n", flush=True)
+    
+    # 调用 API（需要 thinking 进行详细描述）
+    response = client.call(messages, enable_thinking=False)
+    
+    print(f"\n{'='*20} MLLM OUTPUT (Multiview Part Captioning) {'='*20}", flush=True)
+    print(response, flush=True)
+    print(f"{'='*60}\n", flush=True)
+    
+    # 记录日志
+    log_entry = {
+        "type": "multiview_part_captioning",
+        "prompt": step2_prompt,
+        "response": response,
+        "num_views": len(views),
+        "input_part_names": part_names
+    }
+    
+    # 解析结果
+    annotations = []
+    try:
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            result = json.loads(response[json_start:json_end])
+            annotations = result.get('annotations', [])
+            log_entry['parsed_result'] = result
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Warning: Failed to parse multiview part captioning response: {e}", flush=True)
+        log_entry['parse_error'] = str(e)
+    
+    return annotations, log_entry
+
+
 def call_mllm_for_sibling_annotation(
     client: MLLMClient,
     clean_image: np.ndarray,
@@ -1174,138 +1633,123 @@ def call_mllm_for_sibling_annotation(
     som_id_map: Dict[int, int],
     color_map: Dict[int, List[int]]
 ) -> Tuple[ViewAnnotationResult, Dict]:
-    """调用 MLLM 获取单个视角的标注（两步法：视觉分析 -> 匹配标注）"""
+    """
+    调用 MLLM 获取单个视角的标注（两步法）：
+    - Step 1: 部件识别 - 从 SoM 图像识别每个颜色区域的部件名称
+    - Step 2: 部件描述 - 基于部件名称为每个部件生成详细 caption
+    """
     
     view_idx = view_info.get('view_idx', '?')
     
-    # 1. 准备基础信息
-    azimuth = view_info['azimuth']
-    elevation = view_info['elevation']
+    # 生成视角方向描述
+    azimuth = view_info.get('azimuth', 0)
+    elevation = view_info.get('elevation', 0)
     view_direction = get_view_direction_description(azimuth, elevation)
-    view_info_str = f"- 视角: {view_direction}"
     
-    # ================= Step 1: 视觉分析 (基于 Clean View) =================
+    # 生成颜色映射说明
+    color_mapping_str = get_color_mapping_str(child_ids, som_id_map, color_map)
     
-    analysis_prompt = VISUAL_ANALYSIS_PROMPT.format(
+    # ================= Step 1: 部件识别 (基于 SoM View) =================
+    
+    step1_prompt_template = get_prompt("step1_part_naming")
+    step1_prompt = step1_prompt_template.format(
         global_name=global_name,
         global_caption=global_caption,
         parent_name=parent_name,
         parent_caption=parent_caption,
-        current_level=current_level,
-        view_info=view_info_str
+        view_direction=view_direction,
+        color_mapping=color_mapping_str
     )
     
     content_step1 = [
-        {"type": "text", "text": analysis_prompt},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(clean_image)}"}}
+        {"type": "text", "text": step1_prompt},
+        {"type": "text", "text": "[图像: SoM 视图 - 颜色编码的点云图]"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(som_image)}"}}
     ]
     
     messages_step1 = [{"role": "user", "content": content_step1}]
     
-    print(f"\n{'='*20} MLLM INPUT (Step 1: Visual Analysis - View {view_idx}) {'='*20}", flush=True)
-    print(analysis_prompt, flush=True)
+    print(f"\n{'='*20} MLLM INPUT (Step 1: Part Naming - View {view_idx}) {'='*20}", flush=True)
+    print(step1_prompt, flush=True)
     print(f"{'='*60}\n", flush=True)
     
     # Step 1: 不需要 Thinking
-    analysis_response = client.call(messages_step1, enable_thinking=False)
+    step1_response = client.call(messages_step1, enable_thinking=False)
     
     print(f"\n{'='*20} MLLM OUTPUT (Step 1) {'='*20}", flush=True)
-    print(analysis_response, flush=True)
+    print(step1_response, flush=True)
     print(f"{'='*60}\n", flush=True)
 
-    # ================= Step 2: 匹配与标注 (基于 Combined View) =================
+    # 解析 Step 1 结果，提取部件名称
+    part_names_info = ""
+    try:
+        json_start = step1_response.find('{')
+        json_end = step1_response.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            step1_result = json.loads(step1_response[json_start:json_end])
+            part_names = step1_result.get('part_names', [])
+            # 格式化部件名称信息供 Step 2 使用
+            part_names_lines = []
+            for part in part_names:
+                part_names_lines.append(
+                    f"  - **编号 {part.get('som_id', '?')}**: {part.get('color', '未知颜色')} 区域 → {part.get('name', '未知部件')}"
+                )
+            part_names_info = "\n".join(part_names_lines) if part_names_lines else "未能识别部件名称"
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Warning: Failed to parse Step 1 response: {e}", flush=True)
+        part_names_info = "未能解析部件名称，请基于图像自行判断"
 
-    # 生成颜色映射说明
-    COLOR_NAMES = {
-        (255, 0, 0): "红色",
-        (0, 255, 0): "绿色",
-        (0, 0, 255): "蓝色",
-        (255, 255, 0): "黄色",
-        (255, 0, 255): "品红色",
-        (0, 255, 255): "青色",
-        (255, 128, 0): "橙色",
-        (128, 0, 255): "蓝紫色",
-        (0, 255, 128): "春绿色",
-        (255, 0, 128): "玫红色",
-        (128, 255, 0): "酸橙色",
-        (0, 128, 255): "蔚蓝色",
-        (128, 0, 0): "深红色",
-        (0, 128, 0): "深绿色",
-        (0, 0, 128): "深蓝色",
-        (128, 128, 0): "橄榄色",
-        (128, 0, 128): "紫色",
-        (0, 128, 128): "蓝绿色",
-        (165, 42, 42): "棕色",
-        (255, 215, 0): "金色",
-    }
+    # ================= Step 2: 部件描述 (基于 Combined View + Step 1 部件名) =================
     
-    color_mapping_lines = []
-    for cid in child_ids:
-        som_id = som_id_map[cid]
-        rgb = tuple(color_map[cid])
-        color_name = COLOR_NAMES.get(rgb, f"RGB{rgb}")
-        color_mapping_lines.append(f"  - **编号 {som_id}**: {color_name} 区域")
-    color_mapping_str = "\n".join(color_mapping_lines)
-    
-    matching_prompt = SOM_MATCHING_PROMPT.format(
+    step2_prompt_template = get_prompt("step2_part_captioning")
+    step2_prompt = step2_prompt_template.format(
         global_name=global_name,
         global_caption=global_caption,
         parent_name=parent_name,
         parent_caption=parent_caption,
-        visual_analysis=analysis_response,
-        color_mapping=color_mapping_str
+        view_direction=view_direction,
+        part_names_info=part_names_info
     )
     
-    # Step 2: 只发送 SoM 视图
-    # combined_image = np.concatenate([clean_image, som_image], axis=1) # 不再拼接
+    # Step 2: 发送拼接图 (Clean | SoM)
+    combined_image = np.concatenate([clean_image, som_image], axis=1)
     
     content_step2 = [
-        {"type": "text", "text": matching_prompt},
-        {"type": "text", "text": "[图像: SoM 视图 (仅几何形状与区域编码，颜色为区域ID)]"},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(som_image)}"}}
+        {"type": "text", "text": step2_prompt},
+        # {"type": "text", "text": "[图像: Combined 视图 - 左侧 Clean (真实纹理), 右侧 SoM (颜色编码)]"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(combined_image)}"}}
     ]
     
     messages_step2 = [{"role": "user", "content": content_step2}]
     
-    print(f"\n{'='*20} MLLM INPUT (Step 2: SoM Matching - View {view_idx}) {'='*20}", flush=True)
-    print(matching_prompt, flush=True)
+    print(f"\n{'='*20} MLLM INPUT (Step 2: Part Captioning - View {view_idx}) {'='*20}", flush=True)
+    print(step2_prompt, flush=True)
     print(f"{'='*60}\n", flush=True)
     
-    # Step 2: 需要 Thinking
-    response = client.call(messages_step2, enable_thinking=True)
+    # Step 2: 需要 Thinking（详细描述需要推理）
+    step2_response = client.call(messages_step2)
     
     print(f"\n{'='*20} MLLM OUTPUT (Step 2) {'='*20}", flush=True)
-    print(response, flush=True)
+    print(step2_response, flush=True)
     print(f"{'='*60}\n", flush=True)
     
     # 记录日志
     log_entry = {
-        "type": "sibling_view_annotation",
+        "type": "sibling_view_annotation_2step",
         "view_idx": view_idx,
-        "step1_prompt": analysis_prompt,
-        "step1_response": analysis_response,
-        "step2_prompt": matching_prompt,
-        "input_images": ["clean_image (Step 1)", "som_image (Step 2)"],
-        "output_response": response
+        "step1_prompt": step1_prompt,
+        "step1_response": step1_response,
+        "step2_prompt": step2_prompt,
+        "step2_response": step2_response,
+        "input_images": ["som_image (Step 1)", "combined_image (Step 2)"]
     }
     
-    # 解析结果
+    # 解析 Step 2 结果
     try:
-        json_start = response.find('{')
-        json_end = response.rfind('}') + 1
+        json_start = step2_response.find('{')
+        json_end = step2_response.rfind('}') + 1
         if json_start >= 0 and json_end > json_start:
-            result = json.loads(response[json_start:json_end])
-            
-            quality = result.get('quality_assessment', {})
-            quality_score = ViewQualityScore(
-                view_idx=view_info['view_idx'],
-                clarity_score=quality.get('clarity_score', 5),
-                completeness_score=quality.get('completeness_score', 5),
-                occlusion_score=quality.get('occlusion_score', 5),
-                distinguishability_score=quality.get('distinguishability_score', 5),
-                overall_score=quality.get('overall_score', 5),
-                reasoning=quality.get('reasoning', '')
-            )
+            result = json.loads(step2_response[json_start:json_end])
             
             annotations = []
             for ann in result.get('annotations', []):
@@ -1314,24 +1758,20 @@ def call_mllm_for_sibling_annotation(
                     som_id=ann['som_id'],
                     name=ann.get('name', ''),
                     description=ann.get('description', ''),
-                    confidence=ann.get('confidence', 0.5),
-                    color=ann.get('color', '未指定'),
-                    matched_features=ann.get('matched_features', [])
+                    color=ann.get('color', '未指定')
                 ))
             
-            # 将解析结果加入日志，方便后续查看
-            unmatched = result.get('unmatched_features', [])
+            # 将解析结果加入日志
             log_entry['parsed_result'] = {
-                'quality_score': asdict(quality_score),
+                'view_direction': view_direction,
                 'annotations': [asdict(a) for a in annotations],
-                'unmatched_features': unmatched
+                'notes': result.get('notes', '')
             }
             
             return ViewAnnotationResult(
                 view_idx=view_info['view_idx'],
-                quality_score=quality_score,
-                annotations=annotations,
-                unmatched_features=unmatched
+                view_direction=view_direction,
+                annotations=annotations
             ), log_entry
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         print(f"解析响应失败: {e}")
@@ -1339,30 +1779,27 @@ def call_mllm_for_sibling_annotation(
     # 默认返回
     return ViewAnnotationResult(
         view_idx=view_info['view_idx'],
-        quality_score=ViewQualityScore(
-            view_idx=view_info['view_idx'],
-            clarity_score=5, completeness_score=5, occlusion_score=5,
-            distinguishability_score=5, overall_score=5, reasoning="解析失败"
-        ),
-        annotations=[],
-        unmatched_features=[]
+        view_direction=view_direction,
+        annotations=[]
     ), log_entry
 
 
 def merge_multi_view_annotations(
     client: MLLMClient,
     view_results: List[ViewAnnotationResult],
+    views: List[Dict],  # 包含各视角的 clean_image 和 som_image
     global_name: str,
     parent_name: str,
     child_ids: List[int],
     som_id_map: Dict[int, int]
 ) -> Tuple[List[Dict], Dict]:
-    """合并多视角标注结果"""
+    """合并多视角标注结果，综合图像和文本信息选择最优视角"""
     log_entry = {
         "type": "merge_annotations",
         "input_prompt": "",
         "output_response": "",
-        "parsed_result": []
+        "parsed_result": [],
+        "input_images": []
     }
     
     if not view_results:
@@ -1371,32 +1808,49 @@ def merge_multi_view_annotations(
     # 格式化多视角标注
     multi_view_str = ""
     for vr in view_results:
-        multi_view_str += f"\n### 视角 {vr.view_idx + 1}\n"
-        multi_view_str += f"- 质量评分: {vr.quality_score.overall_score:.1f}/10\n"
-        multi_view_str += f"- 评分详情: 清晰度={vr.quality_score.clarity_score}, "
-        multi_view_str += f"完整性={vr.quality_score.completeness_score}, "
-        multi_view_str += f"遮挡={vr.quality_score.occlusion_score}, "
-        multi_view_str += f"可区分性={vr.quality_score.distinguishability_score}\n"
-        multi_view_str += f"- 评估说明: {vr.quality_score.reasoning}\n"
+        multi_view_str += f"\n### 视角 {vr.view_idx + 1}（{vr.view_direction}）\n"
         multi_view_str += "- 标注结果:\n"
         for ann in vr.annotations:
-            multi_view_str += f"  - ID {ann.som_id} [{ann.color}]: {ann.name} - {ann.description} (置信度: {ann.confidence:.2f})\n"
+            multi_view_str += f"  - ID {ann.som_id} [{ann.color}]: {ann.name} - {ann.description}\n"
     
-    prompt = MERGE_ANNOTATIONS_PROMPT.format(
+    # 从文件加载 prompt
+    merge_prompt_template = get_prompt("merge_annotations")
+    prompt = merge_prompt_template.format(
         global_name=global_name,
         parent_name=parent_name,
         num_children=len(child_ids),
         multi_view_annotations=multi_view_str
     )
     
-    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    # 构建消息，包含图像
+    content = [{"type": "text", "text": prompt}]
+    
+    # 添加各视角的拼接图像
+    for i, view in enumerate(views):
+        if view.get('som_image') is not None:
+            # 拼接 clean 和 som 图像
+            combined = np.concatenate([view['clean_image'], view['som_image']], axis=1)
+            img_b64 = client.encode_image(combined)
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+            })
+            view_direction = get_view_direction_description(
+                view['view_info']['azimuth'], 
+                view['view_info']['elevation']
+            )
+            content.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+            log_entry["input_images"].append(f"view_{i+1}_combined")
+    
+    messages = [{"role": "user", "content": content}]
     
     print(f"\n{'='*20} MLLM INPUT (Merge Annotations) {'='*20}", flush=True)
     print(prompt, flush=True)
+    print(f"[附带 {len(log_entry['input_images'])} 张多视角拼接图像]", flush=True)
     print(f"{'='*60}\n", flush=True)
     
     # Merge: 需要 Thinking
-    response = client.call(messages, enable_thinking=True)
+    response = client.call(messages, enable_thinking=False)
     
     print(f"\n{'='*20} MLLM OUTPUT (Merge Annotations) {'='*20}", flush=True)
     print(response, flush=True)
@@ -1418,31 +1872,24 @@ def merge_multi_view_annotations(
     except json.JSONDecodeError:
         pass
     
-    # 如果解析失败，使用简单的合并策略
+    # 如果解析失败，使用简单的合并策略（取第一个非空描述）
     merged = {}
     for vr in view_results:
-        weight = vr.quality_score.overall_score / 10.0
         for ann in vr.annotations:
             if ann.som_id not in merged:
                 merged[ann.som_id] = {
                     'som_id': ann.som_id,
+                    'color': ann.color,
                     'name': ann.name,
                     'caption': ann.description,
-                    'confidence': ann.confidence * weight,
-                    'total_weight': weight
+                    'best_view': vr.view_direction
                 }
             else:
-                if ann.confidence * weight > merged[ann.som_id]['confidence']:
+                # 如果当前描述更长，使用当前描述
+                if len(ann.description) > len(merged[ann.som_id]['caption']):
                     merged[ann.som_id]['name'] = ann.name
                     merged[ann.som_id]['caption'] = ann.description
-                merged[ann.som_id]['confidence'] += ann.confidence * weight
-                merged[ann.som_id]['total_weight'] += weight
-    
-    # 归一化置信度
-    for k in merged:
-        if merged[k]['total_weight'] > 0:
-            merged[k]['confidence'] /= merged[k]['total_weight']
-        del merged[k]['total_weight']
+                    merged[ann.som_id]['best_view'] = vr.view_direction
     
     result_list = list(merged.values())
     log_entry["parsed_result"] = result_list
@@ -1519,7 +1966,7 @@ def process_hierarchical_captioning(
         parent_id=None,
         name=global_name,
         caption=global_caption,
-        confidence=global_result.get('confidence', 0.8),
+        color="",  # 根节点无颜色
         point_count=len(points),
         visible_ratio=1.0,
         children=[]
@@ -1580,66 +2027,106 @@ def process_hierarchical_captioning(
             print(f"    跳过: 有效子簇数量不足 ({len(valid_child_ids)})")
             continue
         
-        # 保存视图图像
-        # 注意：现在只保存拼接后的 Combined Image (Clean|SoM)
-        # 但 generate_sibling_views 返回的是 separate 的，我们需要在这里拼接并保存
+        # 保存视图图像（分别保存各阶段使用的图像）
         if save_images:
             for i, view in enumerate(views):
-                if view['som_image'] is not None:
-                    combined = np.concatenate([view['clean_image'], view['som_image']], axis=1)
+                som_img = view.get('som_image')  # 点云 SoM
+                som_overlay = view.get('som_overlay_image')  # GLB 叠加蒙版
+                
+                # Step 1a 图像：点云 SoM
+                if som_img is not None:
+                    Image.fromarray(som_img).save(
+                        os.path.join(images_dir, f"L{parent_level}_C{parent_cluster_id}_step1a_pointcloud_{i}.png")
+                    )
+                
+                # Step 1b 图像：GLB 叠加蒙版
+                if som_overlay is not None:
+                    Image.fromarray(som_overlay).save(
+                        os.path.join(images_dir, f"L{parent_level}_C{parent_cluster_id}_step1b_overlay_{i}.png")
+                    )
+                
+                # Step 1c 图像：拼接图（点云SoM | GLB叠加蒙版）
+                if som_img is not None and som_overlay is not None:
+                    step1c_combined = np.concatenate([som_img, som_overlay], axis=1)
+                    Image.fromarray(step1c_combined).save(
+                        os.path.join(images_dir, f"L{parent_level}_C{parent_cluster_id}_step1c_combined_{i}.png")
+                    )
+                
+                # Step 2 图像：拼接图（Clean | 点云SoM）
+                if som_img is not None:
+                    combined = np.concatenate([view['clean_image'], som_img], axis=1)
                     Image.fromarray(combined).save(
-                        os.path.join(images_dir, f"L{parent_level}_C{parent_cluster_id}_combined_{i}.png")
+                        os.path.join(images_dir, f"L{parent_level}_C{parent_cluster_id}_step2_combined_{i}.png")
                     )
         
         # 准备日志列表
         interaction_logs = []
         
-        # 多视角标注
+        # 获取颜色映射
+        color_map = views[0]['color_map'] if views else {}
+        
+        # 多视角标注（新流程：直接送入多视角图像）
         if dry_run:
             print(f"    [DRY RUN] 跳过 MLLM 多视角标注调用")
             # 生成模拟的标注结果
             merged_annotations = []
             for i, cid in enumerate(valid_child_ids):
                 som_id = som_id_map.get(cid, i + 1)
+                color_name = get_color_name(color_map.get(cid, [0, 0, 0]))
                 merged_annotations.append({
                     'som_id': som_id,
+                    'color': color_name,
                     'name': f'调试部件_{som_id}',
                     'caption': f'这是 dry_run 模式生成的占位描述 (簇ID={cid})',
-                    'confidence': 0.8,
-                    'color': '未指定'
+                    'best_view': '调试视角'
                 })
             print(f"    [DRY RUN] 生成了 {len(merged_annotations)} 个模拟标注")
         else:
-            view_results = []
-            for view in views:
-                if view['som_image'] is None:
-                    continue
-                
-                result, log = call_mllm_for_sibling_annotation(
-                    mllm_client,
-                    view['clean_image'],
-                    view['som_image'],
-                    global_name,
-                    global_caption,
-                    parent_node.name,
-                    parent_node.caption,
-                    child_level_idx,  # 使用实际的子层级
-                    view['view_info'],
-                    valid_child_ids,
-                    som_id_map,
-                    view['color_map']  # 传递颜色映射
-                )
-                view_results.append(result)
-                interaction_logs.append(log)
-                
-                print(f"    视角 {view['view_info']['view_idx']}: 质量={result.quality_score.overall_score:.1f}")
+            # ========== 新流程：两步多视角标注 ==========
             
-            # 合并标注
-            merged_annotations, log = merge_multi_view_annotations(
-                mllm_client, view_results, global_name, parent_node.name,
-                valid_child_ids, som_id_map
+            # Step 1: 多视角 SoM 图像 -> 部件命名
+            print(f"    [Step 1] 多视角部件命名...")
+            part_names, naming_log = call_mllm_for_multiview_part_naming(
+                mllm_client,
+                views,
+                global_name,
+                global_caption,
+                parent_node.name,
+                parent_node.caption,
+                valid_child_ids,
+                som_id_map,
+                color_map
             )
-            interaction_logs.append(log)
+            interaction_logs.append(naming_log)
+            print(f"    [Step 1] 识别了 {len(part_names)} 个部件名称")
+            
+            # Step 2: 多视角拼接图像 -> 部件描述
+            print(f"    [Step 2] 多视角部件描述...")
+            annotations, captioning_log = call_mllm_for_multiview_part_captioning(
+                mllm_client,
+                views,
+                global_name,
+                global_caption,
+                parent_node.name,
+                parent_node.caption,
+                part_names,
+                valid_child_ids,
+                som_id_map,
+                color_map
+            )
+            interaction_logs.append(captioning_log)
+            print(f"    [Step 2] 生成了 {len(annotations)} 个部件描述")
+            
+            # 转换为 merged_annotations 格式（保持与后续代码兼容）
+            merged_annotations = []
+            for ann in annotations:
+                merged_annotations.append({
+                    'som_id': ann.get('som_id', 0),
+                    'color': ann.get('color', ''),
+                    'name': ann.get('name', ''),
+                    'caption': ann.get('description', ''),
+                    'best_view': ann.get('best_view', '')
+                })
             
             # 保存交互日志
             log_path = os.path.join(output_dir, f"L{parent_level}_C{parent_cluster_id}_interaction.json")
@@ -1669,7 +2156,7 @@ def process_hierarchical_captioning(
                 parent_id=parent_cluster_id,
                 name=ann.get('name', f'部件{som_id}'),
                 caption=ann.get('caption', ''),
-                confidence=ann.get('confidence', 0.5),
+                color=ann.get('color', ''),
                 point_count=point_count,
                 visible_ratio=visible_ratio,
                 children=[]
@@ -1680,7 +2167,7 @@ def process_hierarchical_captioning(
             total_clusters += 1
             max_level_reached = max(max_level_reached, child_level_idx)
             
-            print(f"    + {child_node.name}: {point_count} points, conf={child_node.confidence:.2f}")
+            print(f"    + {child_node.name}: {point_count} points")
     
     # 4. 保存结果
     processing_time = time.time() - start_time
@@ -1732,9 +2219,9 @@ def main():
     parser = argparse.ArgumentParser(description='层级化 3D 物体标注')
     
     # 输入文件
-    parser.add_argument('--glb_path', type=str, required=True,
+    parser.add_argument('--glb_path', type=str, default='example_material/glbs/e85ebb729b02402bbe3b917e1196f8d3.glb',
                        help='GLB 文件路径')
-    parser.add_argument('--npy_path', type=str, required=True,
+    parser.add_argument('--npy_path', type=str, default='example_material/npys/e85ebb729b02402bbe3b917e1196f8d3_8192.npy',
                        help='点云 NPY 文件路径')
     parser.add_argument('--feature_path', type=str, default=None,
                        help='特征 NPY 文件路径（如果未指定，将自动推断）')
@@ -1749,7 +2236,7 @@ def main():
     parser.add_argument('--mllm_provider', type=str, default='dashscope',
                        choices=['openai', 'anthropic', 'openai-compatible', 'dashscope'],
                        help='MLLM 提供商 (默认: dashscope)')
-    parser.add_argument('--mllm_api_key', type=str, default=None,
+    parser.add_argument('--mllm_api_key', type=str, default="sk-7a4e2ece8871495895a9c6a506715e9b",
                        help='MLLM API Key（也可通过环境变量设置: DASHSCOPE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY）')
     parser.add_argument('--mllm_model', type=str, default=None,
                        help='MLLM 模型名称 (dashscope默认: qwen3-vl-plus)')
@@ -1838,3 +2325,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
