@@ -1,11 +1,19 @@
 """
 批量层级化标注脚本
 
+支持多物体并发处理，提高批量标注效率。
+
 使用方法：
+    # 串行处理（默认）
+    python batch_captioning.py \
+        --input_dir example_material \
+        --output_dir outputs/captions
+    
+    # 并发处理（推荐）
     python batch_captioning.py \
         --input_dir example_material \
         --output_dir outputs/captions \
-        --mllm_provider openai
+        --num_workers 4
 """
 
 import os
@@ -14,6 +22,8 @@ import argparse
 import json
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from tqdm import tqdm
 
 from hierarchical_captioning import (
@@ -108,6 +118,10 @@ def main():
     parser.add_argument('--resume', action='store_true', default=False,
                        help='跳过已处理的对象')
     
+    # 并发控制
+    parser.add_argument('--num_workers', type=int, default=1,
+                       help='并发处理的物体数量（默认 1，即串行）')
+    
     args = parser.parse_args()
     
     # 获取 API Key
@@ -164,16 +178,23 @@ def main():
     # 处理结果
     results = []
     failed = []
+    results_lock = Lock()
     
-    for item in tqdm(matched_files, desc="处理对象"):
+    # 过滤已处理的对象
+    if args.resume:
+        filtered_files = []
+        for item in matched_files:
+            output_json = os.path.join(args.output_dir, item['object_id'], f"{item['object_id']}_caption.json")
+            if os.path.exists(output_json):
+                print(f"跳过已处理: {item['object_id']}")
+            else:
+                filtered_files.append(item)
+        matched_files = filtered_files
+        print(f"过滤后剩余 {len(matched_files)} 个待处理对象")
+    
+    def process_single_object(item: dict) -> dict:
+        """处理单个物体（线程安全）"""
         object_id = item['object_id']
-        
-        # 检查是否已处理
-        output_json = os.path.join(args.output_dir, object_id, f"{object_id}_caption.json")
-        if args.resume and os.path.exists(output_json):
-            print(f"\n跳过已处理: {object_id}")
-            continue
-        
         object_output_dir = os.path.join(args.output_dir, object_id)
         
         try:
@@ -191,22 +212,50 @@ def main():
                 dry_run=args.dry_run
             )
             
-            results.append({
+            return {
                 'object_id': object_id,
                 'status': 'success',
                 'total_clusters': result.total_clusters,
                 'total_levels': result.total_levels,
                 'processing_time': result.processing_time
-            })
+            }
             
         except Exception as e:
-            print(f"\n处理失败 {object_id}: {e}")
             import traceback
             traceback.print_exc()
-            failed.append({
+            return {
                 'object_id': object_id,
+                'status': 'failed',
                 'error': str(e)
-            })
+            }
+    
+    # 根据 num_workers 决定串行还是并发
+    if args.num_workers <= 1:
+        # 串行处理
+        print(f"\n串行处理 {len(matched_files)} 个对象...")
+        for item in tqdm(matched_files, desc="处理对象"):
+            result = process_single_object(item)
+            if result['status'] == 'success':
+                results.append(result)
+            else:
+                failed.append(result)
+    else:
+        # 并发处理
+        print(f"\n并发处理 {len(matched_files)} 个对象 (workers={args.num_workers})...")
+        with ThreadPoolExecutor(max_workers=args.num_workers) as executor:
+            futures = {executor.submit(process_single_object, item): item 
+                      for item in matched_files}
+            
+            with tqdm(total=len(futures), desc="处理对象") as pbar:
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result['status'] == 'success':
+                        with results_lock:
+                            results.append(result)
+                    else:
+                        with results_lock:
+                            failed.append(result)
+                    pbar.update(1)
     
     # 保存汇总结果
     summary = {

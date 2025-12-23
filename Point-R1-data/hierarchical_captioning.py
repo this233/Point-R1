@@ -26,6 +26,8 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field, asdict
 from collections import deque
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import random
@@ -68,25 +70,10 @@ class ClusterCaption:
     point_count: int
     visible_ratio: float  # 在最佳视角下的可见比例
     children: List['ClusterCaption'] = field(default_factory=list)
-
-
-@dataclass
-class ClusterAnnotation:
-    """单个视角下的簇标注"""
-    cluster_id: int
-    som_id: int
-    name: str
-    description: str
-    color: str = ""
-
-
-@dataclass
-class ViewAnnotationResult:
-    """单个视角的标注结果"""
-    view_idx: int
-    view_direction: str  # 视角方向描述（如：正面平视）
-    annotations: List[ClusterAnnotation]
-
+    # 视角和 bbox 信息（用于评判）
+    viewpoints: List[Dict] = field(default_factory=list)  # [{eye, center, azimuth, elevation, distance}, ...]
+    bboxes: List[Optional[List[int]]] = field(default_factory=list)  # [[x1,y1,x2,y2], ...] 归一化坐标 0-1000
+    bbox_3d: Optional[List[float]] = None  # [x_min, y_min, z_min, x_max, y_max, z_max] 3D 包围盒
 
 
 @dataclass
@@ -170,12 +157,16 @@ class DashScopeClient(MLLMClient):
         # 获取 temperature 参数（用于控制输出多样性）
         temperature = kwargs.get('temperature', 0.7)
         
+        # 生成随机 seed（用于控制输出的可复现性，同时增加多样性）
+        seed = random.randint(0, 2**31 - 1)
+        
         # 构建请求参数
         kwargs_api = {
             "model": self.model,
             "messages": messages,
             "stream": True,  # 使用流式以支持 thinking
             "temperature": temperature,
+            "seed": seed,
         }
         
         # 如果启用思考模式
@@ -316,8 +307,8 @@ def load_and_prepare_data(
     npy_path: str,
     feature_path: Optional[str] = None,
     k_neighbors: int = 5,
-    betas: List[float] = [0.0, 0.3, 0.5, 0.7]
-) -> Tuple[np.ndarray, Dict[int, np.ndarray], Any]:
+    betas: List[float] = [0.0, 0.2, 0.35, 0.5]
+) -> Tuple[np.ndarray, Dict[int, np.ndarray], Any, np.ndarray]:
     """
     加载数据并执行聚类
     
@@ -325,6 +316,7 @@ def load_and_prepare_data(
         points: 归一化后的点云坐标
         clustering_results: 各层级的聚类标签
         model: 归一化后的 GLB 模型
+        features: 点云特征
     """
     print(f"加载点云: {npy_path}")
     points_raw = np.load(npy_path)
@@ -374,7 +366,7 @@ def load_and_prepare_data(
     model, _ = renderer.normalize_model(model)
     renderer.cleanup()
     
-    return points, clustering_results, model
+    return points, clustering_results, model, features
 
 
 def get_viewpoint_from_angles(azimuth: float, elevation: float, radius: float) -> np.ndarray:
@@ -459,75 +451,27 @@ def optimize_distance_for_cluster(
     return best_dist
 
 
-def get_points_mask(points_2d: np.ndarray, image_size: int, k_size: int = 31) -> np.ndarray:
+def get_judge_style_mask(points_2d: np.ndarray, image_size: int) -> np.ndarray:
     """
-    从 2D 点生成平滑掩码
-    参考 visualize_pointcloud_gradio.py 的实现
+    使用 judge_2d_bbox.py 中的逻辑生成 Mask
+    直接投影 + 形态学闭运算 + 高斯模糊
     """
-    H, W = image_size, image_size
-    mask = np.zeros((H, W), dtype=np.uint8)
+    mask = np.zeros((image_size, image_size), dtype=np.uint8)
     
-    # 绘制初始点
+    # 绘制可见点
     for x, y in points_2d:
-        if 0 <= x < W and 0 <= y < H:
+        if 0 <= x < image_size and 0 <= y < image_size:
             cv2.circle(mask, (int(x), int(y)), radius=8, color=255, thickness=-1)
             
-    # 闭运算连接空隙
-    kernel = np.ones((25, 25), np.uint8)
+    # 形态学操作：闭运算连接空隙
+    kernel = np.ones((15, 15), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
     
     # 高斯模糊 + 阈值化
-    mask_blurred = cv2.GaussianBlur(mask, (k_size, k_size), 0)
-    _, mask_smooth = cv2.threshold(mask_blurred, 127, 255, cv2.THRESH_BINARY)
+    mask_blurred = cv2.GaussianBlur(mask, (21, 21), 0)
+    _, mask = cv2.threshold(mask_blurred, 50, 255, cv2.THRESH_BINARY)
     
-    return mask_smooth
-
-
-def get_robust_mask_from_far_view(
-    points: np.ndarray,
-    direction: np.ndarray,
-    center: np.ndarray,
-    current_dist: float,
-    intrinsic,
-    image_size: int,
-    zoom_factor: float = 3.0
-) -> np.ndarray:
-    """
-    利用"远距离视角"生成致密 Mask，然后放大适配当前视角
-    解决近距离下点云稀疏导致的 Mask 破碎/颗粒化问题
-    参考 visualize_pointcloud_gradio.py 的实现
-    """
-    # 虚拟拉远相机
-    far_dist = current_dist * zoom_factor
-    eye_far = center + direction * far_dist
-    extrinsic_far = create_camera_extrinsic_from_viewpoint(eye_far, center=center)
-    
-    # 在远距离下投影
-    pixel_coords, depths, valid_mask = project_points_to_image_with_depth(
-        points, intrinsic, extrinsic_far, image_size=image_size
-    )
-    
-    valid_pixels = pixel_coords[valid_mask]
-    
-    if len(valid_pixels) == 0:
-        return np.zeros((image_size, image_size), dtype=np.uint8)
-        
-    # 生成远距离 Mask
-    mask_far = get_points_mask(valid_pixels, image_size, k_size=15) 
-    
-    # 将 Mask 放大 zoom_factor 倍
-    H, W = image_size, image_size
-    center_x, center_y = W / 2.0, H / 2.0
-    
-    M = np.array([
-        [zoom_factor, 0, (1 - zoom_factor) * center_x],
-        [0, zoom_factor, (1 - zoom_factor) * center_y]
-    ], dtype=np.float32)
-    
-    mask_near = cv2.warpAffine(mask_far, M, (W, H), flags=cv2.INTER_LINEAR)
-    _, mask_near = cv2.threshold(mask_near, 127, 255, cv2.THRESH_BINARY)
-    
-    return mask_near
+    return mask
 
 
 def create_som_overlay_image(
@@ -541,12 +485,11 @@ def create_som_overlay_image(
     depth_map: np.ndarray,
     intrinsic,
     image_size: int = 800,
-    alpha: float = 0.5,
-    dim_background: bool = True,
-    draw_contours: bool = True
+    alpha: float = 0.5
 ) -> np.ndarray:
     """
     在 GLB 渲染图上叠加透明颜色蒙版（SoM 风格）
+    完全采用评判脚本风格：仅叠加半透明颜色，无轮廓，无背景压暗
     
     参数:
         clean_image: GLB 渲染的原始图像 (RGB)
@@ -560,17 +503,15 @@ def create_som_overlay_image(
         intrinsic: 相机内参
         image_size: 图像尺寸
         alpha: 蒙版透明度 (0~1, 越大越不透明)
-        dim_background: 是否将非簇区域变暗
-        draw_contours: 是否绘制轮廓
     
     返回:
         叠加蒙版后的图像
     """
     H, W = image_size, image_size
     extrinsic = create_camera_extrinsic_from_viewpoint(viewpoint, center=center)
-    direction = (viewpoint - center)
-    direction = direction / np.linalg.norm(direction)
-    dist = np.linalg.norm(viewpoint - center)
+    # direction = (viewpoint - center)
+    # direction = direction / np.linalg.norm(direction)
+    # dist = np.linalg.norm(viewpoint - center)
     
     # 收集所有兄弟簇的点索引
     sibling_mask = np.isin(child_labels, child_ids)
@@ -602,32 +543,22 @@ def create_som_overlay_image(
     for cid in child_ids:
         c_mask = (sibling_child_ids == cid)
         c_visible = is_visible & c_mask
-        c_points_vis = sibling_points[c_visible]
         
-        if len(c_points_vis) > 0:
-            # 使用远距离视角生成更鲁棒的蒙版
-            mask = get_robust_mask_from_far_view(
-                c_points_vis, direction, center, dist, intrinsic, image_size, zoom_factor=2.0
-            )
+        # 获取可见点的 2D 坐标
+        c_pixels_vis = pixel_coords[c_visible]
+        
+        if len(c_pixels_vis) > 0:
+            # 使用评判脚本的逻辑生成蒙版
+            mask = get_judge_style_mask(c_pixels_vis, image_size)
         else:
             mask = np.zeros((H, W), dtype=np.uint8)
         
         child_masks.append(mask)
     
-    # 合并所有蒙版（用于背景暗化）
-    combined_mask = np.zeros((H, W), dtype=np.uint8)
-    for mask in child_masks:
-        combined_mask = cv2.bitwise_or(combined_mask, mask)
-    
     # 创建结果图像
     result_img = clean_image.copy().astype(np.float32)
     
-    # 背景暗化
-    if dim_background:
-        fg_bool = combined_mask > 0
-        result_img[~fg_bool] *= 0.3
-    
-    # 叠加每个子簇的颜色蒙版
+    # 叠加每个子簇的颜色蒙版 (仅叠加颜色，无背景压暗，无轮廓)
     overlay = result_img.copy()
     for i, (mask, cid) in enumerate(zip(child_masks, child_ids)):
         if mask is None or np.sum(mask) == 0:
@@ -639,16 +570,6 @@ def create_som_overlay_image(
         # 叠加半透明颜色
         overlay[mask_bool] = overlay[mask_bool] * (1 - alpha) + color * alpha
         
-        # 绘制轮廓
-        if draw_contours:
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            smooth_contours = []
-            for cnt in contours:
-                epsilon = 0.005 * cv2.arcLength(cnt, True)
-                approx = cv2.approxPolyDP(cnt, epsilon, True)
-                smooth_contours.append(approx)
-            cv2.drawContours(overlay, smooth_contours, -1, color.tolist(), 2)
-    
     result_img = np.clip(overlay, 0, 255).astype(np.uint8)
     return result_img
 
@@ -765,17 +686,349 @@ def find_children_group(
     return None, None, "No split found"
 
 
+def compute_part_difficulty_weights(
+    child_ids: List[int],
+    group_features: np.ndarray,
+    group_point_child_ids: np.ndarray,
+    child_masks_in_group: Dict[int, np.ndarray]
+) -> Dict[int, float]:
+    """
+    计算每个部件的“区分难度权重（混淆度）”，用于“分清”的加权目标。
+
+    精简后的核心逻辑：
+    - **部件间越相似（特征中心距离越小）→ 越难分 → 权重越高**
+    - 适度加入**部件内部特征分散度**（越分散越难稳定识别）
+
+    返回:
+        {cid: weight} 权重归一化到 [1.0, 3.0]
+    """
+    if len(child_ids) <= 1:
+        return {cid: 1.0 for cid in child_ids}
+
+    # 1) 每个部件的特征中心 + 内部分散度
+    part_centers: Dict[int, np.ndarray] = {}
+    part_spreads: Dict[int, float] = {}
+    feat_dim = int(group_features.shape[1]) if group_features.ndim == 2 else 0
+
+    for cid in child_ids:
+        mask = child_masks_in_group[cid]
+        feats = group_features[mask]
+        if len(feats) == 0 or feat_dim == 0:
+            part_centers[cid] = np.zeros((feat_dim,), dtype=np.float32)
+            part_spreads[cid] = 0.0
+            continue
+        center = np.mean(feats, axis=0)
+        part_centers[cid] = center
+        if len(feats) > 1:
+            part_spreads[cid] = float(np.mean(np.linalg.norm(feats - center, axis=1)))
+        else:
+            part_spreads[cid] = 0.0
+
+    # 2) 每个部件找“最近的混淆邻居距离”
+    min_dists = []
+    for cid_i in child_ids:
+        dmin = float("inf")
+        for cid_j in child_ids:
+            if cid_i == cid_j:
+                continue
+            d = float(np.linalg.norm(part_centers[cid_i] - part_centers[cid_j]))
+            dmin = min(dmin, d)
+        min_dists.append(dmin if np.isfinite(dmin) else 0.0)
+    min_dists = np.array(min_dists, dtype=np.float32)
+
+    spreads_arr = np.array([part_spreads[cid] for cid in child_ids], dtype=np.float32)
+
+    # 3) 归一化：距离越小→越难；分散度越大→越难
+    eps = 1e-6
+    if float(min_dists.max() - min_dists.min()) > eps:
+        norm_d = (min_dists - float(min_dists.min())) / (float(min_dists.max() - min_dists.min()) + eps)
+        confusion = 1.0 - norm_d
+    else:
+        confusion = np.ones_like(min_dists) * 0.5
+
+    if float(spreads_arr.max() - spreads_arr.min()) > eps:
+        norm_s = (spreads_arr - float(spreads_arr.min())) / (float(spreads_arr.max() - spreads_arr.min()) + eps)
+    else:
+        norm_s = np.zeros_like(spreads_arr)
+
+    # 4) 混淆度为主，分散度为辅（核心逻辑）
+    raw = 0.8 * confusion + 0.2 * norm_s
+
+    # 5) 映射到 [1,3]
+    # if float(raw.max() - raw.min()) > eps:
+    #     raw_n = (raw - float(raw.min())) / (float(raw.max() - raw.min()) + eps)
+    #     weights = 1.0 + raw_n * 2.0
+    # else:
+    # weights = np.ones_like(raw) * 1.5
+
+    return {cid: float(raw[i]) for i, cid in enumerate(child_ids)}
+
+
+def compute_pair_confusion_scores(
+    child_ids: List[int],
+    group_features: np.ndarray,
+    child_masks_in_group: Dict[int, np.ndarray]
+) -> Dict[Tuple[int, int], float]:
+    """
+    计算“部件对混淆度(confusion)”，用于给“分清(gap)”里的部件对赋权。
+
+    直觉：
+    - 两个部件的特征中心越近 -> 越容易混淆 -> 混淆度越高 -> 该对的分离更重要
+
+    返回:
+        {(cid_i, cid_j): confusion} 其中 i<j，confusion 归一化到 [0,1]（越大越难分）
+    """
+    pair_conf: Dict[Tuple[int, int], float] = {}
+    if len(child_ids) <= 1:
+        return pair_conf
+
+    feat_dim = int(group_features.shape[1]) if group_features.ndim == 2 else 0
+    if feat_dim <= 0:
+        # 无特征时退化为“等权”
+        for ii, cid_i in enumerate(child_ids):
+            for jj in range(ii + 1, len(child_ids)):
+                pair_conf[(int(cid_i), int(child_ids[jj]))] = 0.5
+        return pair_conf
+
+    # 1) 计算每个部件的特征中心
+    part_centers: Dict[int, np.ndarray] = {}
+    for cid in child_ids:
+        mask = child_masks_in_group[cid]
+        feats = group_features[mask]
+        if len(feats) == 0:
+            part_centers[int(cid)] = np.zeros((feat_dim,), dtype=np.float32)
+        else:
+            part_centers[int(cid)] = np.mean(feats, axis=0)
+
+    # 2) 计算所有部件对的中心距离
+    dists: List[float] = []
+    pairs: List[Tuple[int, int]] = []
+    for ii, cid_i in enumerate(child_ids):
+        ci = int(cid_i)
+        for jj in range(ii + 1, len(child_ids)):
+            cj = int(child_ids[jj])
+            d = float(np.linalg.norm(part_centers[ci] - part_centers[cj]))
+            dists.append(d)
+            pairs.append((ci, cj))
+
+    if not dists:
+        return pair_conf
+
+    d_arr = np.array(dists, dtype=np.float32)
+    eps = 1e-6
+    if float(d_arr.max() - d_arr.min()) > eps:
+        norm_d = (d_arr - float(d_arr.min())) / (float(d_arr.max() - d_arr.min()) + eps)
+        conf_arr = 1.0 - norm_d
+    else:
+        conf_arr = np.ones_like(d_arr) * 0.5
+
+    for (ci, cj), c in zip(pairs, conf_arr.tolist()):
+        pair_conf[(int(ci), int(cj))] = float(np.clip(c, 0.0, 1.0))
+    return pair_conf
+
+
+def compute_feature_saliency_weights(features: np.ndarray) -> np.ndarray:
+    """
+    点级别“显著性权重”（看清）：离整体特征中心越远，越“独特/关键”，权重越大。
+    输出范围约 [0.5, 3.0]。
+    """
+    if features is None or len(features) == 0:
+        return np.array([], dtype=np.float32)
+    feat_center = np.mean(features, axis=0)
+    feat_dists = np.linalg.norm(features - feat_center, axis=1)
+    eps = 1e-6
+    if float(feat_dists.max() - feat_dists.min()) > eps:
+        w = (feat_dists - float(feat_dists.min())) / (float(feat_dists.max() - feat_dists.min()) + eps)
+        w = 0.5 + w * 1.5
+    else:
+        w = np.ones_like(feat_dists, dtype=np.float32)
+    return w.astype(np.float32)
+
+
+def compute_mask_gap(mask_a: Optional[np.ndarray], mask_b: Optional[np.ndarray], min_area: int = 64) -> float:
+    """
+    计算两个 2D mask 的最小像素间隔 gap（相交则 0）。
+    用于“分清”：gap 越大，越容易区分。
+    """
+    if mask_a is None or mask_b is None:
+        return 0.0
+    a = (mask_a > 0)
+    b = (mask_b > 0)
+    if int(a.sum()) < min_area or int(b.sum()) < min_area:
+        return 0.0
+    if np.logical_and(a, b).any():
+        return 0.0
+    inv_b = (~b).astype(np.uint8)
+    inv_a = (~a).astype(np.uint8)
+    try:
+        dt_to_b = cv2.distanceTransform(inv_b, cv2.DIST_L2, 3)
+        dt_to_a = cv2.distanceTransform(inv_a, cv2.DIST_L2, 3)
+        gap_ab = float(dt_to_b[a].min()) if a.any() else 0.0
+        gap_ba = float(dt_to_a[b].min()) if b.any() else 0.0
+        return min(gap_ab, gap_ba)
+    except Exception:
+        return 0.0
+
+
+def compute_mask_gap_relation(
+    mask_a: Optional[np.ndarray],
+    mask_b: Optional[np.ndarray],
+    min_area: int = 64
+) -> Tuple[float, bool]:
+    """
+    计算两个 2D mask 的最小像素间隔 gap，并显式区分“相交(遮挡/重叠)”。
+
+    返回:
+        (gap_px, is_intersect)
+        - is_intersect=True: 两 mask 有像素相交，此时 gap_px 固定为 0
+        - is_intersect=False: gap_px>=0；gap_px==0 可视为“相邻/贴边”
+    """
+    if mask_a is None or mask_b is None:
+        return 0.0, False
+    a = (mask_a > 0)
+    b = (mask_b > 0)
+    if int(a.sum()) < min_area or int(b.sum()) < min_area:
+        return 0.0, False
+    if np.logical_and(a, b).any():
+        return 0.0, True
+
+    inv_b = (~b).astype(np.uint8)
+    inv_a = (~a).astype(np.uint8)
+    try:
+        dt_to_b = cv2.distanceTransform(inv_b, cv2.DIST_L2, 3)
+        dt_to_a = cv2.distanceTransform(inv_a, cv2.DIST_L2, 3)
+        gap_ab = float(dt_to_b[a].min()) if a.any() else 0.0
+        gap_ba = float(dt_to_a[b].min()) if b.any() else 0.0
+        return min(gap_ab, gap_ba), False
+    except Exception:
+        return 0.0, False
+
+
+def evaluate_view_candidate(
+    renderer: Open3DRenderer,
+    group_points: np.ndarray,
+    group_point_child_ids: np.ndarray,
+    child_ids: List[int],
+    intrinsic,
+    eye: np.ndarray,
+    center: np.ndarray,
+    feat_weights: np.ndarray,
+    part_difficulty: Dict[int, float],
+    pair_confusion: Dict[Tuple[int, int], float],
+    image_size: int = 256,
+    gap_target_pix: float = 12.0,
+    min_mask_area: int = 64
+) -> Dict[str, Any]:
+    """
+    单个候选视角的核心打分（精简版）：
+    - **看清**：每个部件的“加权可见性”（显著性权重 feat_weights）
+    - **分清**：部件间的 2D gap（难分部件对的 gap 更重要）
+    """
+    extrinsic = create_camera_extrinsic_from_viewpoint(eye, center=center)
+    _, depth_map = renderer.render_view(eye, center=center, return_depth=True)
+    pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
+        group_points, intrinsic, extrinsic, image_size=image_size
+    )
+
+    is_visible = np.zeros(len(group_points), dtype=bool)
+    fov_indices = np.where(valid_mask_fov)[0]
+    if len(fov_indices) > 0:
+        vis_sub = check_visible_points_with_depth(
+            group_points[fov_indices],
+            pixel_coords[fov_indices],
+            depths[fov_indices],
+            depth_map,
+            use_relative_threshold=True,
+            relative_threshold_ratio=0.02
+        )
+        is_visible[fov_indices] = vis_sub
+
+    child_scores: Dict[int, float] = {}
+    child_vis_ratios: List[float] = []
+    child_masks_2d_visible: Dict[int, Optional[np.ndarray]] = {}
+
+    for cid in child_ids:
+        mask = (group_point_child_ids == cid)
+        vmask = is_visible & mask
+        weighted_visible = float(np.sum(feat_weights[vmask])) if np.any(vmask) else 0.0
+        total_weight = float(np.sum(feat_weights[mask])) if np.any(mask) else 0.0
+        score = (weighted_visible / total_weight) if total_weight > 0 else 0.0
+        child_scores[cid] = score
+
+        count_visible = int(np.sum(vmask))
+        count_total = int(np.sum(mask))
+        child_vis_ratios.append((count_visible / count_total) if count_total > 0 else 0.0)
+
+        if count_visible > 0:
+            vis_pixels = pixel_coords[vmask]
+            child_masks_2d_visible[cid] = get_judge_style_mask(vis_pixels, image_size)
+        else:
+            child_masks_2d_visible[cid] = None
+
+    # ========= 分清：对每个部件对计算“绝对分离度”（分离 > 相邻 > 相交）=========
+    # - 相交(遮挡/重叠)：sep=0
+    # - 相邻(贴边，gap≈0)：sep 给予一个小的正基线，确保“相邻 > 相交”
+    # - 分离(gap>0)：sep 随 gap 增大而上升，上限 1
+    ADJACENT_BASE_SCORE = 0.15
+    ADJACENT_EPS_PX = 1e-6
+
+    separation_score = 0.0
+    total_pair_w = 0.0
+    pair_gap_scores: List[Tuple[int, int, float]] = []  # (cid_i, cid_j, sep_score in [0,1])
+    pair_sep_info: List[Tuple[int, int, float, float, str]] = []  # (cid_i, cid_j, sep_score, gap_px, relation)
+    for i, cid_i in enumerate(child_ids):
+        mi = child_masks_2d_visible.get(cid_i)
+        for j in range(i + 1, len(child_ids)):
+            cid_j = child_ids[j]
+            mj = child_masks_2d_visible.get(cid_j)
+            gap_px, is_intersect = compute_mask_gap_relation(mi, mj, min_area=min_mask_area)
+            if is_intersect:
+                sep_score = 0.0
+                relation = "intersect"
+            else:
+                # 非相交：相邻(gap=0) 也应比相交更好
+                sep_raw = float(np.clip(gap_px / gap_target_pix, 0.0, 1.0))
+                sep_score = max(ADJACENT_BASE_SCORE, sep_raw)
+                relation = "adjacent" if gap_px <= ADJACENT_EPS_PX else "separated"
+
+            pair_gap_scores.append((int(cid_i), int(cid_j), float(sep_score)))
+            pair_sep_info.append((int(cid_i), int(cid_j), float(sep_score), float(gap_px), str(relation)))
+            # 对的权重应来自“该对的混淆度”，而不是两个部件难度相乘
+            key = (int(cid_i), int(cid_j))
+            w = float(pair_confusion.get(key, 0.5))
+            separation_score += float(sep_score) * w
+            total_pair_w += w
+    separation_score = (separation_score / total_pair_w) if total_pair_w > 1e-9 else 0.0
+
+    overall_vis = float(np.sum(is_visible) / max(1, len(group_points)))
+
+    return {
+        "child_scores": child_scores,
+        "vis_ratios": child_vis_ratios,
+        "overall_vis": overall_vis,
+        "separation_score": float(separation_score),
+        "pair_gap_scores": pair_gap_scores,
+        "pair_sep_info": pair_sep_info,
+    }
+
+
 def generate_sibling_views(
     points: np.ndarray,
     clustering_results: Dict[int, np.ndarray],
     model: Any,
     parent_level_idx: int,
     parent_id: int,
+    features: np.ndarray,
     image_size: int = 800,
     num_views: int = 4
 ) -> Tuple[List[Dict], Dict[int, int], int, str]:
     """
     为兄弟簇组生成多视角渲染
+    
+    改进逻辑：
+    1. 使用 3D DINO 特征计算点的重要性权重 (Saliency)
+    2. 计算部件级别的"区分难度权重"（难分的部件需要更高覆盖）
+    3. 使用贪婪算法选择视角组合，最大化所有子部件的加权覆盖率
     
     返回:
         views: 视角数据列表，每个包含 clean_image, som_image, view_info
@@ -804,8 +1057,6 @@ def generate_sibling_views(
     child_ids = sorted_child_ids
     
     print(f"    [DEBUG generate_sibling_views] 排序后子簇 (按点数降序): {child_ids}")
-    print(f"    [DEBUG generate_sibling_views] 子簇点数详情: {child_point_counts}")
-    print(f"    [DEBUG generate_sibling_views] SoM ID 映射: {som_id_map}")
     
     # 收集组内所有点
     group_indices = []
@@ -816,44 +1067,39 @@ def generate_sibling_views(
         group_point_child_ids.extend([cid] * len(indices))
     
     group_points = points[group_indices]
+    group_features = features[group_indices]
     group_point_child_ids = np.array(group_point_child_ids)
     group_center = np.mean(group_points, axis=0)
     
-    # 生成颜色映射 - 使用预定义的高区分度颜色 (20色)
-    # 确保颜色之间有足够的视觉区分度
+    # 预计算每个子簇的 mask (提前计算，供后续多处使用)
+    child_masks_in_group = {cid: (group_point_child_ids == cid) for cid in child_ids}
+    
+    # ========= 精简核心：看清(显著性) + 分清(混淆度权重 + gap) =========
+    print(f"    [DEBUG] 计算特征显著性权重(看清) + 部件混淆度权重(难分)...")
+    feat_weights = compute_feature_saliency_weights(group_features)
+    part_difficulty = compute_part_difficulty_weights(child_ids, group_features, group_point_child_ids, child_masks_in_group)
+    pair_confusion = compute_pair_confusion_scores(child_ids, group_features, child_masks_in_group)
+    difficulty_info = ", ".join([f"P{som_id_map[cid]}:{part_difficulty.get(cid, 1.0):.2f}" for cid in child_ids])
+    if len(feat_weights) > 0:
+        print(f"    [DEBUG] 部件难度权重: {difficulty_info}")
+        print(f"    [DEBUG] 显著性范围: {float(feat_weights.min()):.2f} - {float(feat_weights.max()):.2f}")
+    else:
+        print(f"    [DEBUG] 部件难度权重: {difficulty_info}")
+
+    if pair_confusion:
+        # 打印最“难分”的若干部件对（混淆度越高越难分）
+        top_pair_conf = sorted(pair_confusion.items(), key=lambda x: x[1], reverse=True)[:min(6, len(pair_confusion))]
+        pair_conf_info = ", ".join([f"(P{som_id_map[ci]}-P{som_id_map[cj]}:{v:.2f})" for (ci, cj), v in top_pair_conf])
+        print(f"    [DEBUG] 部件对混淆度(top): {pair_conf_info}")
+    
+    # 生成颜色映射
     DISTINCT_COLORS = [
-        [255, 0, 0],      # 红色
-        [0, 255, 0],      # 绿色
-        [0, 0, 255],      # 蓝色
-        [255, 255, 0],    # 黄色
-        [255, 0, 255],    # 品红色
-        [0, 255, 255],    # 青色
-        [255, 128, 0],    # 橙色
-        [128, 0, 255],    # 蓝紫色
-        [0, 255, 128],    # 春绿色
-        [255, 0, 128],    # 玫红色
-        [128, 255, 0],    # 酸橙色
-        [0, 128, 255],    # 蔚蓝色
-        [128, 0, 0],      # 深红色
-        [0, 128, 0],      # 深绿色
-        [0, 0, 128],      # 深蓝色
-        [128, 128, 0],    # 橄榄色
-        [128, 0, 128],    # 紫色
-        [0, 128, 128],    # 蓝绿色
-        [165, 42, 42],    # 棕色
-        [255, 215, 0],    # 金色
+        [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255], 
+        [0, 255, 255], [255, 128, 0], [128, 0, 255], [0, 255, 128], [255, 0, 128],
+        [128, 255, 0], [0, 128, 255], [128, 0, 0], [0, 128, 0], [0, 0, 128],
+        [128, 128, 0], [128, 0, 128], [0, 128, 128], [165, 42, 42], [255, 215, 0]
     ]
-    
-    color_map = {}
-    for i, cid in enumerate(child_ids):
-        color_map[cid] = DISTINCT_COLORS[i % len(DISTINCT_COLORS)]
-    
-    print(f"    [DEBUG] 颜色映射 (使用高区分度颜色, 共{len(DISTINCT_COLORS)}种):")
-    for cid in child_ids:
-        som_id = som_id_map[cid]
-        color = color_map[cid]
-        count = np.sum(child_labels == cid)
-        print(f"      - 簇 ID {cid} (SoM ID {som_id}): {count} 点, 颜色 RGB={color}")
+    color_map = {cid: DISTINCT_COLORS[i % len(DISTINCT_COLORS)] for i, cid in enumerate(child_ids)}
     
     # 搜索最佳视角
     renderer = Open3DRenderer(width=256, height=256)
@@ -871,122 +1117,338 @@ def generate_sibling_views(
     }
     intrinsic = create_camera_intrinsic_from_params(cam_params)
     
-    view_points = sample_view_points(radius=1.0, partition=3)
+    # 使用更密集的采样 (Partition=8 -> ~146 points) 以获得更好覆盖
+    view_points = sample_view_points(radius=1.0, partition=4)
+    print(f"    [DEBUG] 采样 {len(view_points)} 个候选视角进行覆盖率分析...")
+    
     candidates = []
     
-    for vp in view_points:
+    for i, vp in enumerate(view_points):
         direction = vp / np.linalg.norm(vp)
+        
+        # 优化距离 (快速版，降低分辨率或迭代次数可加速，此处保持默认)
         dist = optimize_distance_for_cluster(
             renderer, group_points, direction, group_center, 
-            intrinsic, 256, target_occupancy=0.6, min_dist_threshold=0.5
+            intrinsic, 256, target_occupancy=0.7, min_dist_threshold=0.5
         )
         
         eye = group_center + direction * dist
-        extrinsic = create_camera_extrinsic_from_viewpoint(eye, center=group_center)
-        
-        _, depth_map = renderer.render_view(eye, center=group_center, return_depth=True)
-        pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
-            group_points, intrinsic, extrinsic, image_size=256
+        cand_score = evaluate_view_candidate(
+            renderer=renderer,
+            group_points=group_points,
+            group_point_child_ids=group_point_child_ids,
+            child_ids=child_ids,
+            intrinsic=intrinsic,
+            eye=eye,
+            center=group_center,
+            feat_weights=feat_weights,
+            part_difficulty=part_difficulty,
+            pair_confusion=pair_confusion,
+            image_size=256,
+            gap_target_pix=12.0,
+            min_mask_area=64
         )
-        
-        is_visible_depth = np.zeros(len(group_points), dtype=bool)
-        fov_indices = np.where(valid_mask_fov)[0]
-        
-        if len(fov_indices) > 0:
-            visible_mask_sub = check_visible_points_with_depth(
-                group_points[fov_indices],
-                pixel_coords[fov_indices],
-                depths[fov_indices],
-                depth_map,
-                use_relative_threshold=True,
-                relative_threshold_ratio=0.02
-            )
-            is_visible_depth[fov_indices] = visible_mask_sub
-        
-        valid_mask = is_visible_depth
-        
-        # 计算评分
-        child_vis_list = []
-        for cid in child_ids:
-            c_mask = (group_point_child_ids == cid)
-            c_total = np.sum(c_mask)
-            c_visible = np.sum(valid_mask & c_mask)
-            c_vis_ratio = c_visible / c_total if c_total > 0 else 0
-            child_vis_list.append(c_vis_ratio)
-        
-        min_child_vis = min(child_vis_list) if child_vis_list else 0
-        mean_child_vis = np.mean(child_vis_list) if child_vis_list else 0
-        overall_vis = np.sum(valid_mask) / len(group_points)
-        
-        if overall_vis < 0.1:
-            continue
-        
-        score = (min_child_vis * 10.0) + (mean_child_vis * 5.0) + (overall_vis * 3.0)
-        
         candidates.append({
-            'score': score,
+            'idx': i,
             'direction': direction,
             'dist': dist,
             'eye': eye,
-            'stats': {
-                'min_child': min_child_vis,
-                'mean_child': mean_child_vis,
-                'overall': overall_vis,
-                'child_vis_detail': child_vis_list
-            }
+            **cand_score
         })
-    
-    candidates.sort(key=lambda x: x['score'], reverse=True)
-    
-    valid_candidates = candidates
 
-    # # 筛选视角
-    # MIN_WORST_CHILD_VIS = 0.15
-    # MIN_MEAN_CHILD_VIS = 0.35
+    # ========= 精简核心：贪婪选择（看清增益 + 分清gap + 视角多样性）=========
+    selected_indices = []
+    selected_dirs: List[np.ndarray] = []
+    current_coverage = {cid: 0.0 for cid in child_ids}
+    # 维护“部件对分离度”的当前最好值：仅用于日志/分析（不再用于增量打分）
+    pair_keys: List[Tuple[int, int]] = []
+    for ii, cid_i in enumerate(child_ids):
+        for jj in range(ii + 1, len(child_ids)):
+            pair_keys.append((int(cid_i), int(child_ids[jj])))
+    current_pair_sep: Dict[Tuple[int, int], float] = {k: 0.0 for k in pair_keys}
     
-    # valid_candidates = [c for c in candidates 
-    #                    if c['stats']['min_child'] >= MIN_WORST_CHILD_VIS 
-    #                    and c['stats']['mean_child'] >= MIN_MEAN_CHILD_VIS]
+    # 分离度得分统计，用于归一化
+    all_sep_scores = [c['separation_score'] for c in candidates]
+    max_sep = max(all_sep_scores) if all_sep_scores else 1.0
+    min_sep = min(all_sep_scores) if all_sep_scores else 0.0
     
-    # if not valid_candidates:
-    #     valid_candidates = [c for c in candidates 
-    #                       if c['stats']['min_child'] >= 0.08 
-    #                       and c['stats']['mean_child'] >= 0.20]
+    # 权重：分清(gap) + 多样性(方向差异)
+    SEPARATION_WEIGHT = 0.25
+    DIVERSITY_WEIGHT = 0.15
+
+    # ========= 调试日志控制 =========
+    # 打印“每一步里每个候选视角”的各项增益（日志会比较多，默认开启以便排查）
+    LOG_ALL_CANDIDATES = True
+    LOG_TOP_PAIRS = 6   # 每个候选视角打印贡献最大的部件对数量
+    LOG_TOP_PARTS = 6   # 每个候选视角打印增益最大的部件数量
     
-    # if not valid_candidates and candidates:
-    #     valid_candidates = candidates[:num_views]
+    # 增益阈值参数 - 当增益低于阈值时停止添加视角
+    MIN_GAIN_RATIO = 0.1      # 相对阈值：增益 < 首视角增益的 10% 时停止
+    MIN_GAIN_ABSOLUTE = 0.05  # 绝对阈值：增益 < 0.05 时停止
     
-    # 选择多样化视角
-    DISTINCTNESS_THRESHOLD = 0.7
-    final_views = []
-    for cand in valid_candidates:
-        if len(final_views) >= num_views:
+    print(f"    [DEBUG] 开始贪婪选择最多 {num_views} 个视角 (看清增益 + gap分离度 + 多样性)...")
+    print(f"    [DEBUG] 分离度范围: {min_sep:.3f} - {max_sep:.3f}")
+    print(f"    [DEBUG] 停止条件: 总增益 < max(首视角总增益*{MIN_GAIN_RATIO}, {MIN_GAIN_ABSOLUTE})")
+    
+    first_view_gain = None  # 记录首视角“总增益”作为基准
+    
+    for step in range(num_views):
+        best_cand_idx = -1
+        best_gain = -1.0
+        best_vis_gain = 0.0  # 纯看清增益（不含分离度/多样性奖励）
+        best_details = {}
+        best_sep_bonus = 0.0
+        best_div_bonus = 0.0
+        best_cand_debug = {}
+        
+        for i, cand in enumerate(candidates):
+            if i in selected_indices:
+                continue
+                
+            # 看清：新视角能为每个部件带来的“显著性加权可见性”提升（难分部件权重大）
+            visibility_gain = 0.0
+            gain_details = {}
+            part_gain_list: List[Tuple[int, float, float]] = []  # (cid, raw_gain, weighted_gain)
+            
+            for cid in child_ids:
+                new_score = cand['child_scores'][cid]
+                curr_score = current_coverage[cid]
+                # 只有当新视角比已有视角看得更清楚时才计入增益
+                raw_gain = max(0, new_score - curr_score)
+                
+                weighted_gain = float(raw_gain) * float(part_difficulty.get(cid, 1.0))
+                visibility_gain += weighted_gain
+                gain_details[cid] = (raw_gain, weighted_gain)
+                if raw_gain > 0:
+                    part_gain_list.append((int(cid), float(raw_gain), float(weighted_gain)))
+            
+            # 分清：使用“每个视角的绝对分离度”(分离 > 相邻 > 相交) + 混淆度权重
+            current_avg_coverage = np.mean(list(current_coverage.values()))
+            # sep_importance = 1.0 - current_avg_coverage * 0.5  # 覆盖率高时降低分离度权重
+            sep_importance = 1.0
+            sep_numer = 0.0
+            sep_denom = 0.0
+            used_pairs = 0
+            pair_contribs: List[Tuple[float, int, int, float, float, float, float, float]] = []
+            # (contrib, cid_i, cid_j, sep_val, best_so_far, sep_score, weight, relevance)
+            for cid_i, cid_j, sep_score in cand.get("pair_gap_scores", []):
+                key = (int(cid_i), int(cid_j))
+                best_so_far = float(current_pair_sep.get(key, 0.0))
+                sep_val = float(sep_score)
+
+                new_i = float(cand["child_scores"].get(cid_i, 0.0))
+                new_j = float(cand["child_scores"].get(cid_j, 0.0))
+                curr_i = float(current_coverage.get(cid_i, 0.0))
+                curr_j = float(current_coverage.get(cid_j, 0.0))
+
+                pair_vis = min(new_i, new_j)  # 两者都能看见才“分得清”
+                # 如果两者在该视角下几乎都看不见，则“分清”的意义不大
+                if pair_vis <= 0.3:
+                    continue
+
+                # 可见性（而非可见性增量）：越看得见越可靠
+                relevance = float(pair_vis)
+
+                # 对的权重应是“该对的混淆度”，而不是两个部件难度相乘
+                w = float(pair_confusion.get(key, 0.5))
+                weight = w * relevance
+                if weight <= 1e-12:
+                    continue
+                sep_numer += sep_val * weight
+                sep_denom += weight
+                used_pairs += 1
+                pair_contribs.append((
+                    float(sep_val * weight),
+                    int(cid_i), int(cid_j),
+                    float(sep_val), float(best_so_far), float(sep_score),
+                    float(weight), float(relevance)
+                ))
+
+            # 如果完全没有“可见性对齐”的有效部件对增益，则回退到全局 separation_score 的归一化奖励
+            if sep_denom > 1e-9:
+                sep_step = sep_numer / sep_denom  # 近似归一化到 [0,1]
+            else:
+                sep_step = 0
+                # if max_sep > min_sep + 1e-6:
+                #     sep_step = float((cand["separation_score"] - min_sep) / (max_sep - min_sep))
+                # else:
+                #     sep_step = 0.5
+            separation_bonus = float(sep_step) * SEPARATION_WEIGHT * float(sep_importance)
+            
+            # 多视角多样性：尽量避免方向重复（与已选方向最大余弦相似越小越好）
+            if len(selected_dirs) == 0:
+                diversity_score = 1.0
+            else:
+                sims = [float(np.dot(cand['direction'], d)) for d in selected_dirs]
+                max_sim = max(sims) if sims else 1.0
+                diversity_score = float(np.clip(1.0 - max_sim, 0.0, 1.0))
+            diversity_bonus = diversity_score * DIVERSITY_WEIGHT
+            
+            # 总增益 = 看清增益 + 分清奖励 + 多样性奖励 + 次要排序键
+            total_gain = float(visibility_gain) + float(separation_bonus) + float(diversity_bonus)
+            total_gain += float(cand['overall_vis']) * 0.01
+
+            # ========= 候选视角日志：各项增益 + 关键贡献项 =========
+            if LOG_ALL_CANDIDATES:
+                # 方向与文字描述（与后续 view_info 保持一致的坐标约定）
+                d = cand.get("direction", None)
+                if d is not None:
+                    d = np.asarray(d, dtype=float)
+                    d_norm = float(np.linalg.norm(d))
+                    if d_norm > 1e-9:
+                        dd = d / d_norm
+                    else:
+                        dd = d
+                    cand_el = float(np.degrees(np.arcsin(dd[1]))) if d_norm > 1e-9 else 0.0
+                    cand_az = float(np.degrees(np.arctan2(dd[2], dd[0]))) if d_norm > 1e-9 else 0.0
+                    if cand_az < 0:
+                        cand_az += 360.0
+                    cand_dir_desc = get_view_direction_description(cand_az, cand_el)
+                    dir_str = f"[{dd[0]:+.2f},{dd[1]:+.2f},{dd[2]:+.2f}]"
+                else:
+                    cand_az, cand_el = 0.0, 0.0
+                    cand_dir_desc = "未知方向"
+                    dir_str = "[nan,nan,nan]"
+
+                # 部件增益：按 weighted_gain 降序
+                part_gain_list.sort(key=lambda x: x[2], reverse=True)
+                top_parts = part_gain_list[:max(0, int(LOG_TOP_PARTS))]
+                parts_str = ", ".join([
+                    f"P{som_id_map[cid]}:+{raw_g:.2f}(w:+{w_g:.2f})" for cid, raw_g, w_g in top_parts
+                ])
+
+                # 部件对贡献：按 contrib 降序
+                pair_contribs.sort(key=lambda x: x[0], reverse=True)
+                top_pairs = pair_contribs[:max(0, int(LOG_TOP_PAIRS))]
+                pairs_str = ", ".join([
+                    f"(P{som_id_map[ci]}-P{som_id_map[cj]}:sep{sg:.2f},best{bestv:.2f},conf{wt:.2f},rel{relv:.2f})"
+                    for _, ci, cj, sg, bestv, _, wt, relv in top_pairs
+                ])
+
+                print(
+                    f"      Cand[{i:03d}] "
+                    f"Dir={dir_str} (az={cand_az:.1f}, el={cand_el:.1f}, {cand_dir_desc}) | "
+                    f"Total={total_gain:.4f} | "
+                    f"VisGain={float(visibility_gain):.4f} | "
+                    f"SepBonus={float(separation_bonus):.4f} (sep_step={float(sep_step):.3f}, used_pairs={used_pairs}, imp={float(sep_importance):.3f}) | "
+                    f"DivBonus={float(diversity_bonus):.4f} | "
+                    f"overall_vis={float(cand.get('overall_vis', 0.0)):.3f}"
+                )
+                if parts_str:
+                    print(f"        Parts: {parts_str}")
+                if pairs_str:
+                    print(f"        Pairs: {pairs_str}")
+            
+            if total_gain > best_gain:
+                best_gain = total_gain
+                best_vis_gain = visibility_gain
+                best_cand_idx = i
+                best_details = gain_details
+                best_sep_bonus = separation_bonus
+                best_div_bonus = diversity_bonus
+                best_cand_debug = {
+                    "sep_step": float(sep_step),
+                    "sep_importance": float(sep_importance),
+                    "used_pairs": int(used_pairs),
+                    "azimuth": float(cand_az) if LOG_ALL_CANDIDATES else None,
+                    "elevation": float(cand_el) if LOG_ALL_CANDIDATES else None,
+                    "dir_desc": str(cand_dir_desc) if LOG_ALL_CANDIDATES else None,
+                    "dir_str": str(dir_str) if LOG_ALL_CANDIDATES else None,
+                }
+        
+        if best_cand_idx == -1:
+            print(f"      No candidate found, stopping early.")
             break
-        is_distinct = all(np.dot(cand['direction'], s['direction']) <= DISTINCTNESS_THRESHOLD 
-                         for s in final_views)
-        if is_distinct:
-            final_views.append(cand)
+        
+        # 记录首视角总增益作为基准（用于后续提前停止判定）
+        if first_view_gain is None:
+            first_view_gain = best_gain
+            gain_threshold = max(first_view_gain * MIN_GAIN_RATIO, MIN_GAIN_ABSOLUTE)
+            print(f"    [DEBUG] 首视角总增益: {first_view_gain:.4f}, 后续停止阈值: {gain_threshold:.4f}")
+        else:
+            # 检查是否应该停止（第一个视角总是添加）
+            gain_threshold = max(first_view_gain * MIN_GAIN_RATIO, MIN_GAIN_ABSOLUTE)
+            if best_gain < gain_threshold:
+                print(f"      View {step+1} gain ({best_gain:.4f}) < threshold ({gain_threshold:.4f}), stopping early.")
+                break
+        
+        # 添加视角
+        selected_indices.append(best_cand_idx)
+        cand = candidates[best_cand_idx]
+        selected_dirs.append(cand['direction'])
+        
+        # 更新覆盖率
+        print(
+            f"      Selected View {step+1}: TotalGain={best_gain:.4f} "
+            f"(VisGain={best_vis_gain:.4f}, SepBonus={best_sep_bonus:.4f}, DivBonus={best_div_bonus:.4f}, "
+            f"Dir={best_cand_debug.get('dir_str', '[]')} "
+            f"(az={best_cand_debug.get('azimuth', 0.0):.1f}, el={best_cand_debug.get('elevation', 0.0):.1f}, "
+            f"{best_cand_debug.get('dir_desc', '')}), "
+            f"sep_step={best_cand_debug.get('sep_step', 0.0):.3f}, used_pairs={best_cand_debug.get('used_pairs', 0)}, "
+            f"sep_imp={best_cand_debug.get('sep_importance', 0.0):.3f})"
+        )
+
+        # 打印“部件对分离关系”：分离 > 相邻 > 相交（遮挡/重叠）
+        sel_infos = []
+        for ci, cj, sep_score, gap_px, rel in cand.get("pair_sep_info", []):
+            conf = float(pair_confusion.get((int(ci), int(cj)), 0.5))
+            sel_infos.append((conf, float(sep_score), float(gap_px), str(rel), int(ci), int(cj)))
+        # 优先看“最混淆”的对
+        sel_infos.sort(key=lambda x: x[0], reverse=True)
+        top_infos = sel_infos[:max(0, int(LOG_TOP_PAIRS))]
+        pair_sep_str = ", ".join([
+            f"(P{som_id_map[ci]}-P{som_id_map[cj]}:{rel},gap{gap_px:.1f}px,sep{sep:.2f},conf{conf:.2f})"
+            for conf, sep, gap_px, rel, ci, cj in top_infos
+        ])
+        if pair_sep_str:
+            print(f"        PairSep: {pair_sep_str}")
+
+        # 更新部件对分离度（取已选视角中的最大 sep_score）
+        for cid_i, cid_j, sep_score in cand.get("pair_gap_scores", []):
+            key = (int(cid_i), int(cid_j))
+            if key in current_pair_sep and float(sep_score) > float(current_pair_sep[key]):
+                current_pair_sep[key] = float(sep_score)
+        
+        # 打印每个部件的增益明细
+        for cid in child_ids:
+            score = cand['child_scores'][cid]
+            if score > current_coverage[cid]:
+                raw_g, weighted_g = best_details.get(cid, (0, 0))
+                if raw_g > 0:
+                    print(f"        Part {som_id_map[cid]}: +{raw_g:.2f} (weighted: +{weighted_g:.2f}, difficulty: {part_difficulty[cid]:.2f})")
+                current_coverage[cid] = score
+                
+        # 打印当前覆盖状态
+        coverage_vals = [f"P{som_id_map[cid]}:{current_coverage[cid]:.2f}" for cid in child_ids]
+        print(f"      Current Coverage: {coverage_vals}")
+        print(f"      2D Separation: {cand['separation_score']:.3f}")
+        
+        # 检查是否所有部件都已达到高覆盖率
+        min_coverage = min(current_coverage.values())
+        if min_coverage >= 0.8:
+            print(f"      All parts have >=80% coverage (min={min_coverage:.2f}), stopping early.")
+            break
+            
+    final_views_data = [candidates[i] for i in selected_indices]
     
     renderer.cleanup()
     
-    if not final_views:
+    if not final_views_data:
         return [], som_id_map, child_level_idx, "无法找到有效视角"
     
-    # ========== 关键修复：分离 GLB 渲染和点云渲染，避免渲染器冲突 ==========
-    # 参考 visualize_pointcloud_gradio.py 中的实现
+    # ========== 后续渲染逻辑 (复用原有逻辑) ==========
     
     # Step 1: 先渲染所有 Clean 视图 (GLB) 和 SoM Overlay 视图
     renderer_final = Open3DRenderer(width=image_size, height=image_size)
     renderer_final.setup()
     renderer_final.upload_model(model)
     
-    # 准备相机内参（用于 SoM overlay 生成）
     fov_final = 60.0
-    fx_final = image_size / (2.0 * np.tan(np.radians(fov_final) / 2.0))
     cam_params_final = {
         'intrinsic': {
             'width': image_size, 'height': image_size,
-            'fx': fx_final, 'fy': fx_final,
+            'fx': image_size / (2.0 * np.tan(np.radians(fov_final) / 2.0)),
+            'fy': image_size / (2.0 * np.tan(np.radians(fov_final) / 2.0)),
             'cx': image_size / 2.0, 'cy': image_size / 2.0,
             'fov': fov_final
         }
@@ -994,67 +1456,122 @@ def generate_sibling_views(
     intrinsic_final = create_camera_intrinsic_from_params(cam_params_final)
     
     clean_images = []
-    som_overlay_images = []  # 新增：在 GLB 渲染图上叠加蒙版的 SoM 图像
+    som_overlay_images = []
     
-    for view in final_views:
-        # 渲染 Clean 图像和深度图
-        clean_img, depth_map = renderer_final.render_view(view['eye'], center=group_center, return_depth=True)
+    for cand in final_views_data:
+        clean_img, depth_map = renderer_final.render_view(cand['eye'], center=group_center, return_depth=True)
         clean_images.append(clean_img)
         
-        # 生成 SoM Overlay 图像（在 clean_img 上叠加透明颜色蒙版）
         som_overlay_img = create_som_overlay_image(
             clean_img, points, child_labels, child_ids, color_map,
-            view['eye'], group_center, depth_map, intrinsic_final,
-            image_size=image_size, alpha=0.5, dim_background=True, draw_contours=True
+            cand['eye'], group_center, depth_map, intrinsic_final,
+            image_size=image_size, alpha=0.3
         )
         som_overlay_images.append(som_overlay_img)
     
-    # Step 2: 清理 GLB 渲染器（重要：必须在点云渲染之前清理）
     renderer_final.cleanup()
     renderer_final = None
     
-    # Step 3: 渲染所有 SoM 视图 (点云) - 此时 GLB 渲染器已释放
+    # Step 3: 渲染所有 SoM 视图 (点云)
     output_views = []
-    for i, view in enumerate(final_views):
+    for i, cand in enumerate(final_views_data):
         clean_img = clean_images[i]
-        som_overlay_img = som_overlay_images[i]  # 新增
+        som_overlay_img = som_overlay_images[i]
         
-        # 渲染 SoM 图像（点云聚类可视化）
         som_img = render_pointcloud_som_image(
             points, child_labels, child_ids, color_map,
-            view['eye'], group_center, image_size=image_size,
-            point_size=3.0, dim_factor=0.25, distance=view['dist']
+            cand['eye'], group_center, image_size=image_size,
+            point_size=3.0, dim_factor=0.25, distance=cand['dist']
         )
         
         # 计算视角描述
-        vec = view['eye'] - group_center
+        vec = cand['eye'] - group_center
         dist = np.linalg.norm(vec)
         elevation = np.degrees(np.arcsin(vec[1] / dist)) if dist > 1e-6 else 0
         azimuth = np.degrees(np.arctan2(vec[2], vec[0]))
-        if azimuth < 0:
-            azimuth += 360
+        if azimuth < 0: azimuth += 360
+        
+        # 构造 view_info
+        stats = {
+            'child_vis_detail': cand['vis_ratios'],
+            'overall': cand['overall_vis'],
+            'mean_child': np.mean(cand['vis_ratios']) if cand['vis_ratios'] else 0,
+            'min_child': min(cand['vis_ratios']) if cand['vis_ratios'] else 0
+        }
         
         view_info = {
             'view_idx': i,
             'azimuth': azimuth,
             'elevation': elevation,
             'distance': dist,
-            'eye': view['eye'].tolist(),
+            'eye': cand['eye'].tolist(),
             'center': group_center.tolist(),
-            'stats': view['stats']
+            'stats': stats
         }
+        
+        # 计算每个子簇的 2D bbox (复用原有逻辑)
+        child_bboxes = {}
+        # ... (bbox calculation logic repeated here for completeness) ...
+        # 为了简洁，这里直接复制原有 BBox 计算逻辑
+        
+        fov_final = 60.0
+        fx_final = image_size / (2.0 * np.tan(np.radians(fov_final) / 2.0))
+        cam_params_bbox = {
+            'intrinsic': {
+                'width': image_size, 'height': image_size,
+                'fx': fx_final, 'fy': fx_final,
+                'cx': image_size / 2.0, 'cy': image_size / 2.0,
+                'fov': fov_final
+            }
+        }
+        intrinsic_bbox = create_camera_intrinsic_from_params(cam_params_bbox)
+        extrinsic_bbox = create_camera_extrinsic_from_viewpoint(cand['eye'], center=group_center)
+        
+        for cid in child_ids:
+            c_mask = (child_labels == cid)
+            c_points = points[c_mask]
+            
+            if len(c_points) == 0:
+                child_bboxes[cid] = None
+                continue
+            
+            pixel_coords, depths, valid_mask_fov = project_points_to_image_with_depth(
+                c_points, intrinsic_bbox, extrinsic_bbox, image_size=image_size
+            )
+            
+            valid_pixels = pixel_coords[valid_mask_fov]
+            
+            if len(valid_pixels) < 3:
+                child_bboxes[cid] = None
+                continue
+            
+            x_min = np.min(valid_pixels[:, 0])
+            x_max = np.max(valid_pixels[:, 0])
+            y_min = np.min(valid_pixels[:, 1])
+            y_max = np.max(valid_pixels[:, 1])
+            
+            x1 = int(x_min / image_size * 1000)
+            y1 = int(y_min / image_size * 1000)
+            x2 = int(x_max / image_size * 1000)
+            y2 = int(y_max / image_size * 1000)
+            
+            if x2 > x1 and y2 > y1:
+                child_bboxes[cid] = [x1, y1, x2, y2]
+            else:
+                child_bboxes[cid] = None
         
         output_views.append({
             'clean_image': clean_img,
             'som_image': som_img,
-            'som_overlay_image': som_overlay_img,  # 新增：GLB 渲染图 + 透明蒙版叠加
+            'som_overlay_image': som_overlay_img,
             'view_info': view_info,
             'child_ids': child_ids,
             'som_id_map': som_id_map,
-            'color_map': color_map
+            'color_map': color_map,
+            'child_bboxes': child_bboxes
         })
     
-    return output_views, som_id_map, child_level_idx, f"生成了 {len(output_views)} 个视角"
+    return output_views, som_id_map, child_level_idx, f"生成了 {len(output_views)} 个优化视角 (Greedy Cover)"
 
 
 def generate_global_views(
@@ -1229,18 +1746,25 @@ def call_mllm_for_multiview_part_naming(
     child_ids: List[int],
     som_id_map: Dict[int, int],
     color_map: Dict[int, List[int]],
-    num_rounds: int = 3
+    num_rounds: int = 3,
+    max_concurrent: int = 8
 ) -> Tuple[List[Dict], Dict]:
     """
     调用 MLLM 进行多视角部件命名（三阶段流程，带多轮采样）
     
     流程：
-    1. Step 1a: 送入多视角点云 SoM 图像，获取基于几何结构的命名（3轮，每轮 shuffle）
-    2. Step 1b: 送入多视角 GLB 叠加蒙版图像，获取基于纹理的命名（3轮，每轮 shuffle）
+    1. Step 1a: 送入多视角点云 SoM 图像，获取基于几何结构的命名（多轮采样）
+    2. Step 1b: 送入多视角 GLB 叠加蒙版图像，获取基于纹理的命名（多轮采样）
     3. Step 1c: 送入拼接图，综合所有结果得到最终命名
+    
+    优化策略：
+    - Step 1a 和 Step 1b 的所有轮次并发执行（共 num_rounds * 2 个请求）
+    - 同一阶段使用相同消息内容，仅改变 temperature，最大化 prefix cache 命中
+    - Step 1c 等待 Step 1a/1b 完成后执行
     
     参数:
         num_rounds: 每个阶段的采样轮数（默认 3）
+        max_concurrent: 最大并发请求数（默认 6）
     
     返回:
         part_names: 部件名称列表
@@ -1251,14 +1775,15 @@ def call_mllm_for_multiview_part_naming(
     
     # 收集日志
     log_entry = {
-        "type": "multiview_part_naming_3stage_multiround",
+        "type": "multiview_part_naming_3stage_concurrent",
         "num_views": len(views),
         "num_rounds": num_rounds,
+        "max_concurrent": max_concurrent,
         "stages": []
     }
     
     # 不同轮次使用不同的 temperature 增加多样性
-    temperatures = [0.4,0.8,1.2]
+    temperatures = [0.8]
     
     # 格式化命名结果的辅助函数
     def format_naming_result(part_names_list, round_idx=None):
@@ -1281,9 +1806,24 @@ def call_mllm_for_multiview_part_naming(
             pass
         return []
     
-    # ==================== Step 1a: 点云 SoM 命名 (多轮) ====================
-    all_pointcloud_results = []  # 存储所有轮次的结果
+    # ==================== 预先编码图像以复用 (优化 prefix cache) ====================
+    som_images_encoded = []  # [(img_b64, view_direction), ...]
+    som_overlay_images_encoded = []
     
+    for view in views:
+        som_img = view.get('som_image')
+        som_overlay_img = view.get('som_overlay_image')
+        view_direction = get_view_direction_description(
+            view['view_info']['azimuth'],
+            view['view_info']['elevation']
+        )
+        
+        if som_img is not None:
+            som_images_encoded.append((client.encode_image(som_img), view_direction))
+        if som_overlay_img is not None:
+            som_overlay_images_encoded.append((client.encode_image(som_overlay_img), view_direction))
+    
+    # ==================== 构建 Step 1a 消息 ====================
     step1a_prompt_template = get_prompt("step1a_pointcloud_som_naming")
     step1a_prompt = step1a_prompt_template.format(
         global_name=global_name,
@@ -1293,69 +1833,16 @@ def call_mllm_for_multiview_part_naming(
         color_mapping=color_mapping_str
     )
     
-    for round_idx in range(num_rounds):
-        print(f"\n{'='*20} Step 1a 轮次 {round_idx+1}/{num_rounds}: 点云 SoM 命名 {'='*20}", flush=True)
-        
-        # Shuffle 视图顺序
-        shuffled_indices = list(range(len(views)))
-        random.shuffle(shuffled_indices)
-        shuffled_views = [views[i] for i in shuffled_indices]
-        
-        # 构建消息：只包含点云 SoM 图像（按 shuffle 后的顺序）
-        content_1a = [{"type": "text", "text": step1a_prompt}]
-        for i, view in enumerate(shuffled_views):
-            som_img = view.get('som_image')
-            if som_img is None:
-                continue
-            img_b64 = client.encode_image(som_img)
-            view_direction = get_view_direction_description(
-                view['view_info']['azimuth'],
-                view['view_info']['elevation']
-            )
-            content_1a.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
-            })
-            content_1a.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
-        
-        messages_1a = [{"role": "user", "content": content_1a}]
-        
-        print(f"[轮次 {round_idx+1}] Temperature: {temperatures[round_idx % len(temperatures)]}", flush=True)
-        print(f"[轮次 {round_idx+1}] 视图顺序 (原索引): {shuffled_indices}", flush=True)
-        print(f"[附带 {len(shuffled_views)} 张多视角点云 SoM 图像]", flush=True)
-        
-        response_1a = client.call(
-            messages_1a, 
-            enable_thinking=False,
-            temperature=temperatures[round_idx % len(temperatures)]
-        )
-        
-        print(f"\n{'='*20} Step 1a 轮次 {round_idx+1} OUTPUT {'='*20}", flush=True)
-        print(response_1a, flush=True)
-        
-        # 解析结果
-        pointcloud_part_names = parse_naming_response(response_1a)
-        all_pointcloud_results.append({
-            "round": round_idx + 1,
-            "temperature": temperatures[round_idx % len(temperatures)],
-            "shuffle_order": shuffled_indices,
-            "response": response_1a,
-            "parsed_part_names": pointcloud_part_names
+    content_1a = [{"type": "text", "text": step1a_prompt}]
+    for i, (img_b64, view_direction) in enumerate(som_images_encoded):
+        content_1a.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
         })
-        
-        log_entry["stages"].append({
-            "stage": f"1a_pointcloud_som_round{round_idx+1}",
-            "round": round_idx + 1,
-            "temperature": temperatures[round_idx % len(temperatures)],
-            "shuffle_order": shuffled_indices,
-            "prompt": step1a_prompt,
-            "response": response_1a,
-            "parsed_part_names": pointcloud_part_names
-        })
+        content_1a.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+    messages_1a = [{"role": "user", "content": content_1a}]
     
-    # ==================== Step 1b: GLB 叠加蒙版命名 (多轮) ====================
-    all_glb_overlay_results = []  # 存储所有轮次的结果
-    
+    # ==================== 构建 Step 1b 消息 ====================
     step1b_prompt_template = get_prompt("step1b_glb_overlay_naming")
     step1b_prompt = step1b_prompt_template.format(
         global_name=global_name,
@@ -1365,64 +1852,86 @@ def call_mllm_for_multiview_part_naming(
         color_mapping=color_mapping_str
     )
     
-    for round_idx in range(num_rounds):
-        print(f"\n{'='*20} Step 1b 轮次 {round_idx+1}/{num_rounds}: GLB 叠加蒙版命名 {'='*20}", flush=True)
-        
-        # Shuffle 视图顺序
-        shuffled_indices = list(range(len(views)))
-        random.shuffle(shuffled_indices)
-        shuffled_views = [views[i] for i in shuffled_indices]
-        
-        # 构建消息：只包含 GLB 叠加蒙版图像（按 shuffle 后的顺序）
-        content_1b = [{"type": "text", "text": step1b_prompt}]
-        for i, view in enumerate(shuffled_views):
-            som_overlay_img = view.get('som_overlay_image')
-            if som_overlay_img is None:
-                continue
-            img_b64 = client.encode_image(som_overlay_img)
-            view_direction = get_view_direction_description(
-                view['view_info']['azimuth'],
-                view['view_info']['elevation']
-            )
-            content_1b.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
-            })
-            content_1b.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
-        
-        messages_1b = [{"role": "user", "content": content_1b}]
-        
-        print(f"[轮次 {round_idx+1}] Temperature: {temperatures[round_idx % len(temperatures)]}", flush=True)
-        print(f"[轮次 {round_idx+1}] 视图顺序 (原索引): {shuffled_indices}", flush=True)
-        print(f"[附带 {len(shuffled_views)} 张多视角 GLB 叠加蒙版图像]", flush=True)
-        
-        response_1b = client.call(
-            messages_1b, 
-            enable_thinking=False,
-            temperature=temperatures[round_idx % len(temperatures)]
-        )
-        
-        print(f"\n{'='*20} Step 1b 轮次 {round_idx+1} OUTPUT {'='*20}", flush=True)
-        print(response_1b, flush=True)
-        
-        # 解析结果
-        glb_overlay_part_names = parse_naming_response(response_1b)
-        all_glb_overlay_results.append({
-            "round": round_idx + 1,
-            "temperature": temperatures[round_idx % len(temperatures)],
-            "shuffle_order": shuffled_indices,
-            "response": response_1b,
-            "parsed_part_names": glb_overlay_part_names
+    content_1b = [{"type": "text", "text": step1b_prompt}]
+    for i, (img_b64, view_direction) in enumerate(som_overlay_images_encoded):
+        content_1b.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
         })
-        
-        log_entry["stages"].append({
-            "stage": f"1b_glb_overlay_round{round_idx+1}",
+        content_1b.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
+    messages_1b = [{"role": "user", "content": content_1b}]
+    
+    # ==================== 并发执行 Step 1a 和 Step 1b 的所有轮次 ====================
+    print(f"\n{'='*20} Step 1a/1b 并发执行 ({num_rounds * 2} 个请求) {'='*20}", flush=True)
+    
+    def call_step1a(round_idx: int) -> Dict:
+        """执行单轮 Step 1a"""
+        temp = temperatures[round_idx % len(temperatures)]
+        response = client.call(messages_1a, enable_thinking=False, temperature=temp)
+        return {
+            "stage": "1a",
             "round": round_idx + 1,
-            "temperature": temperatures[round_idx % len(temperatures)],
-            "shuffle_order": shuffled_indices,
+            "temperature": temp,
+            "response": response,
+            "parsed_part_names": parse_naming_response(response)
+        }
+    
+    def call_step1b(round_idx: int) -> Dict:
+        """执行单轮 Step 1b"""
+        temp = temperatures[round_idx % len(temperatures)]
+        response = client.call(messages_1b, enable_thinking=False, temperature=temp)
+        return {
+            "stage": "1b",
+            "round": round_idx + 1,
+            "temperature": temp,
+            "response": response,
+            "parsed_part_names": parse_naming_response(response)
+        }
+    
+    # 使用线程池并发执行
+    all_pointcloud_results = []
+    all_glb_overlay_results = []
+    
+    with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        # 提交所有任务
+        futures_1a = [executor.submit(call_step1a, i) for i in range(num_rounds)]
+        futures_1b = [executor.submit(call_step1b, i) for i in range(num_rounds)]
+        
+        # 收集结果
+        for future in futures_1a:
+            result = future.result()
+            all_pointcloud_results.append(result)
+            print(f"  [Step 1a 轮次 {result['round']}] Temperature={result['temperature']}, "
+                  f"解析到 {len(result['parsed_part_names'])} 个部件", flush=True)
+        
+        for future in futures_1b:
+            result = future.result()
+            all_glb_overlay_results.append(result)
+            print(f"  [Step 1b 轮次 {result['round']}] Temperature={result['temperature']}, "
+                  f"解析到 {len(result['parsed_part_names'])} 个部件", flush=True)
+    
+    # 按轮次排序
+    all_pointcloud_results.sort(key=lambda x: x['round'])
+    all_glb_overlay_results.sort(key=lambda x: x['round'])
+    
+    # 记录日志
+    for r in all_pointcloud_results:
+        log_entry["stages"].append({
+            "stage": f"1a_pointcloud_som_round{r['round']}",
+            "round": r['round'],
+            "temperature": r['temperature'],
+            "prompt": step1a_prompt,
+            "response": r['response'],
+            "parsed_part_names": r['parsed_part_names']
+        })
+    for r in all_glb_overlay_results:
+        log_entry["stages"].append({
+            "stage": f"1b_glb_overlay_round{r['round']}",
+            "round": r['round'],
+            "temperature": r['temperature'],
             "prompt": step1b_prompt,
-            "response": response_1b,
-            "parsed_part_names": glb_overlay_part_names
+            "response": r['response'],
+            "parsed_part_names": r['parsed_part_names']
         })
     
     # ==================== Step 1c: 综合命名 ====================
@@ -1619,283 +2128,6 @@ def call_mllm_for_multiview_part_captioning(
     return annotations, log_entry
 
 
-def call_mllm_for_sibling_annotation(
-    client: MLLMClient,
-    clean_image: np.ndarray,
-    som_image: np.ndarray,
-    global_name: str,
-    global_caption: str,
-    parent_name: str,
-    parent_caption: str,
-    current_level: int,
-    view_info: Dict,
-    child_ids: List[int],
-    som_id_map: Dict[int, int],
-    color_map: Dict[int, List[int]]
-) -> Tuple[ViewAnnotationResult, Dict]:
-    """
-    调用 MLLM 获取单个视角的标注（两步法）：
-    - Step 1: 部件识别 - 从 SoM 图像识别每个颜色区域的部件名称
-    - Step 2: 部件描述 - 基于部件名称为每个部件生成详细 caption
-    """
-    
-    view_idx = view_info.get('view_idx', '?')
-    
-    # 生成视角方向描述
-    azimuth = view_info.get('azimuth', 0)
-    elevation = view_info.get('elevation', 0)
-    view_direction = get_view_direction_description(azimuth, elevation)
-    
-    # 生成颜色映射说明
-    color_mapping_str = get_color_mapping_str(child_ids, som_id_map, color_map)
-    
-    # ================= Step 1: 部件识别 (基于 SoM View) =================
-    
-    step1_prompt_template = get_prompt("step1_part_naming")
-    step1_prompt = step1_prompt_template.format(
-        global_name=global_name,
-        global_caption=global_caption,
-        parent_name=parent_name,
-        parent_caption=parent_caption,
-        view_direction=view_direction,
-        color_mapping=color_mapping_str
-    )
-    
-    content_step1 = [
-        {"type": "text", "text": step1_prompt},
-        {"type": "text", "text": "[图像: SoM 视图 - 颜色编码的点云图]"},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(som_image)}"}}
-    ]
-    
-    messages_step1 = [{"role": "user", "content": content_step1}]
-    
-    print(f"\n{'='*20} MLLM INPUT (Step 1: Part Naming - View {view_idx}) {'='*20}", flush=True)
-    print(step1_prompt, flush=True)
-    print(f"{'='*60}\n", flush=True)
-    
-    # Step 1: 不需要 Thinking
-    step1_response = client.call(messages_step1, enable_thinking=False)
-    
-    print(f"\n{'='*20} MLLM OUTPUT (Step 1) {'='*20}", flush=True)
-    print(step1_response, flush=True)
-    print(f"{'='*60}\n", flush=True)
-
-    # 解析 Step 1 结果，提取部件名称
-    part_names_info = ""
-    try:
-        json_start = step1_response.find('{')
-        json_end = step1_response.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            step1_result = json.loads(step1_response[json_start:json_end])
-            part_names = step1_result.get('part_names', [])
-            # 格式化部件名称信息供 Step 2 使用
-            part_names_lines = []
-            for part in part_names:
-                part_names_lines.append(
-                    f"  - **编号 {part.get('som_id', '?')}**: {part.get('color', '未知颜色')} 区域 → {part.get('name', '未知部件')}"
-                )
-            part_names_info = "\n".join(part_names_lines) if part_names_lines else "未能识别部件名称"
-    except (json.JSONDecodeError, KeyError) as e:
-        print(f"Warning: Failed to parse Step 1 response: {e}", flush=True)
-        part_names_info = "未能解析部件名称，请基于图像自行判断"
-
-    # ================= Step 2: 部件描述 (基于 Combined View + Step 1 部件名) =================
-    
-    step2_prompt_template = get_prompt("step2_part_captioning")
-    step2_prompt = step2_prompt_template.format(
-        global_name=global_name,
-        global_caption=global_caption,
-        parent_name=parent_name,
-        parent_caption=parent_caption,
-        view_direction=view_direction,
-        part_names_info=part_names_info
-    )
-    
-    # Step 2: 发送拼接图 (Clean | SoM)
-    combined_image = np.concatenate([clean_image, som_image], axis=1)
-    
-    content_step2 = [
-        {"type": "text", "text": step2_prompt},
-        # {"type": "text", "text": "[图像: Combined 视图 - 左侧 Clean (真实纹理), 右侧 SoM (颜色编码)]"},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{client.encode_image(combined_image)}"}}
-    ]
-    
-    messages_step2 = [{"role": "user", "content": content_step2}]
-    
-    print(f"\n{'='*20} MLLM INPUT (Step 2: Part Captioning - View {view_idx}) {'='*20}", flush=True)
-    print(step2_prompt, flush=True)
-    print(f"{'='*60}\n", flush=True)
-    
-    # Step 2: 需要 Thinking（详细描述需要推理）
-    step2_response = client.call(messages_step2)
-    
-    print(f"\n{'='*20} MLLM OUTPUT (Step 2) {'='*20}", flush=True)
-    print(step2_response, flush=True)
-    print(f"{'='*60}\n", flush=True)
-    
-    # 记录日志
-    log_entry = {
-        "type": "sibling_view_annotation_2step",
-        "view_idx": view_idx,
-        "step1_prompt": step1_prompt,
-        "step1_response": step1_response,
-        "step2_prompt": step2_prompt,
-        "step2_response": step2_response,
-        "input_images": ["som_image (Step 1)", "combined_image (Step 2)"]
-    }
-    
-    # 解析 Step 2 结果
-    try:
-        json_start = step2_response.find('{')
-        json_end = step2_response.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            result = json.loads(step2_response[json_start:json_end])
-            
-            annotations = []
-            for ann in result.get('annotations', []):
-                annotations.append(ClusterAnnotation(
-                    cluster_id=child_ids[ann['som_id'] - 1] if ann['som_id'] <= len(child_ids) else -1,
-                    som_id=ann['som_id'],
-                    name=ann.get('name', ''),
-                    description=ann.get('description', ''),
-                    color=ann.get('color', '未指定')
-                ))
-            
-            # 将解析结果加入日志
-            log_entry['parsed_result'] = {
-                'view_direction': view_direction,
-                'annotations': [asdict(a) for a in annotations],
-                'notes': result.get('notes', '')
-            }
-            
-            return ViewAnnotationResult(
-                view_idx=view_info['view_idx'],
-                view_direction=view_direction,
-                annotations=annotations
-            ), log_entry
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        print(f"解析响应失败: {e}")
-    
-    # 默认返回
-    return ViewAnnotationResult(
-        view_idx=view_info['view_idx'],
-        view_direction=view_direction,
-        annotations=[]
-    ), log_entry
-
-
-def merge_multi_view_annotations(
-    client: MLLMClient,
-    view_results: List[ViewAnnotationResult],
-    views: List[Dict],  # 包含各视角的 clean_image 和 som_image
-    global_name: str,
-    parent_name: str,
-    child_ids: List[int],
-    som_id_map: Dict[int, int]
-) -> Tuple[List[Dict], Dict]:
-    """合并多视角标注结果，综合图像和文本信息选择最优视角"""
-    log_entry = {
-        "type": "merge_annotations",
-        "input_prompt": "",
-        "output_response": "",
-        "parsed_result": [],
-        "input_images": []
-    }
-    
-    if not view_results:
-        return [], log_entry
-    
-    # 格式化多视角标注
-    multi_view_str = ""
-    for vr in view_results:
-        multi_view_str += f"\n### 视角 {vr.view_idx + 1}（{vr.view_direction}）\n"
-        multi_view_str += "- 标注结果:\n"
-        for ann in vr.annotations:
-            multi_view_str += f"  - ID {ann.som_id} [{ann.color}]: {ann.name} - {ann.description}\n"
-    
-    # 从文件加载 prompt
-    merge_prompt_template = get_prompt("merge_annotations")
-    prompt = merge_prompt_template.format(
-        global_name=global_name,
-        parent_name=parent_name,
-        num_children=len(child_ids),
-        multi_view_annotations=multi_view_str
-    )
-    
-    # 构建消息，包含图像
-    content = [{"type": "text", "text": prompt}]
-    
-    # 添加各视角的拼接图像
-    for i, view in enumerate(views):
-        if view.get('som_image') is not None:
-            # 拼接 clean 和 som 图像
-            combined = np.concatenate([view['clean_image'], view['som_image']], axis=1)
-            img_b64 = client.encode_image(combined)
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
-            })
-            view_direction = get_view_direction_description(
-                view['view_info']['azimuth'], 
-                view['view_info']['elevation']
-            )
-            content.append({"type": "text", "text": f"[视角 {i+1}: {view_direction}]"})
-            log_entry["input_images"].append(f"view_{i+1}_combined")
-    
-    messages = [{"role": "user", "content": content}]
-    
-    print(f"\n{'='*20} MLLM INPUT (Merge Annotations) {'='*20}", flush=True)
-    print(prompt, flush=True)
-    print(f"[附带 {len(log_entry['input_images'])} 张多视角拼接图像]", flush=True)
-    print(f"{'='*60}\n", flush=True)
-    
-    # Merge: 需要 Thinking
-    response = client.call(messages, enable_thinking=False)
-    
-    print(f"\n{'='*20} MLLM OUTPUT (Merge Annotations) {'='*20}", flush=True)
-    print(response, flush=True)
-    print(f"{'='*60}\n", flush=True)
-    
-    # 记录日志
-    log_entry["input_prompt"] = prompt
-    log_entry["output_response"] = response
-    
-    # 解析结果
-    try:
-        json_start = response.find('{')
-        json_end = response.rfind('}') + 1
-        if json_start >= 0 and json_end > json_start:
-            result = json.loads(response[json_start:json_end])
-            merged_list = result.get('merged_annotations', [])
-            log_entry["parsed_result"] = merged_list
-            return merged_list, log_entry
-    except json.JSONDecodeError:
-        pass
-    
-    # 如果解析失败，使用简单的合并策略（取第一个非空描述）
-    merged = {}
-    for vr in view_results:
-        for ann in vr.annotations:
-            if ann.som_id not in merged:
-                merged[ann.som_id] = {
-                    'som_id': ann.som_id,
-                    'color': ann.color,
-                    'name': ann.name,
-                    'caption': ann.description,
-                    'best_view': vr.view_direction
-                }
-            else:
-                # 如果当前描述更长，使用当前描述
-                if len(ann.description) > len(merged[ann.som_id]['caption']):
-                    merged[ann.som_id]['name'] = ann.name
-                    merged[ann.som_id]['caption'] = ann.description
-                    merged[ann.som_id]['best_view'] = vr.view_direction
-    
-    result_list = list(merged.values())
-    log_entry["parsed_result"] = result_list
-    return result_list, log_entry
-
-
 # ===================== 主流程 =====================
 
 def process_hierarchical_captioning(
@@ -1905,7 +2137,7 @@ def process_hierarchical_captioning(
     output_dir: str,
     mllm_client: Optional[MLLMClient],
     k_neighbors: int = 5,
-    betas: List[float] = [0.0, 0.3, 0.5, 0.7],
+    betas: List[float] = [0.0, 0.2, 0.35, 0.5],
     max_depth: int = 4,
     min_cluster_points: int = 100,
     save_images: bool = True,
@@ -1929,7 +2161,7 @@ def process_hierarchical_captioning(
     
     # 1. 加载数据和执行聚类
     print("[Step 1] 加载数据和执行聚类...")
-    points, clustering_results, model = load_and_prepare_data(
+    points, clustering_results, model, features = load_and_prepare_data(
         glb_path, npy_path, feature_path, k_neighbors, betas
     )
     
@@ -1959,6 +2191,10 @@ def process_hierarchical_captioning(
     print("\n[Step 3] 层级遍历和标注...")
     
     # 创建根节点
+    root_min_bound = np.min(points, axis=0)
+    root_max_bound = np.max(points, axis=0)
+    root_bbox_3d = root_min_bound.tolist() + root_max_bound.tolist()
+
     root_cluster = ClusterCaption(
         cluster_id=0,
         som_id=0,
@@ -1969,7 +2205,8 @@ def process_hierarchical_captioning(
         color="",  # 根节点无颜色
         point_count=len(points),
         visible_ratio=1.0,
-        children=[]
+        children=[],
+        bbox_3d=root_bbox_3d
     )
     
     # BFS 遍历层级树
@@ -1988,8 +2225,8 @@ def process_hierarchical_captioning(
         # 生成兄弟簇视图（可能跨多层查找子节点）
         views, som_id_map, child_level_idx, msg = generate_sibling_views(
             points, clustering_results, model,
-            parent_level, parent_cluster_id,
-            image_size=800, num_views=4
+            parent_level, parent_cluster_id, features,
+            image_size=800, num_views=5
         )
         
         if not views:
@@ -2149,6 +2386,22 @@ def process_hierarchical_captioning(
             vis_idx = som_id - 1
             visible_ratio = best_view_stats['child_vis_detail'][vis_idx] if vis_idx < len(best_view_stats['child_vis_detail']) else 0
             
+            # 收集视角和 bbox 信息（用于评判）
+            viewpoints_info = []
+            bboxes_info = []
+            for view in views:
+                view_info = view['view_info']
+                viewpoints_info.append({
+                    'eye': view_info['eye'],
+                    'center': view_info['center'],
+                    'azimuth': view_info['azimuth'],
+                    'elevation': view_info['elevation'],
+                    'distance': view_info['distance']
+                })
+                # 获取该子簇在当前视角的 bbox
+                child_bboxes = view.get('child_bboxes', {})
+                bboxes_info.append(child_bboxes.get(cluster_id))
+            
             child_node = ClusterCaption(
                 cluster_id=cluster_id,
                 som_id=som_id,
@@ -2159,8 +2412,20 @@ def process_hierarchical_captioning(
                 color=ann.get('color', ''),
                 point_count=point_count,
                 visible_ratio=visible_ratio,
-                children=[]
+                children=[],
+                viewpoints=viewpoints_info,
+                bboxes=bboxes_info,
+                bbox_3d=None  # 初始化
             )
+            
+            # 计算 3D bbox
+            c_mask = (child_labels == cluster_id)
+            c_points = points[c_mask]
+            if len(c_points) > 0:
+                min_bound = np.min(c_points, axis=0)
+                max_bound = np.max(c_points, axis=0)
+                # 转换为 list [x_min, y_min, z_min, x_max, y_max, z_max]
+                child_node.bbox_3d = min_bound.tolist() + max_bound.tolist()
             
             parent_node.children.append(child_node)
             queue.append((child_node, child_level_idx, cluster_id))  # 使用实际的子层级
@@ -2250,7 +2515,7 @@ def main():
     # 聚类参数
     parser.add_argument('--k_neighbors', type=int, default=5,
                        help='KNN 邻居数')
-    parser.add_argument('--betas', type=float, nargs='+', default=[0.0, 0.3, 0.5, 0.7],
+    parser.add_argument('--betas', type=float, nargs='+', default=[0.0, 0.2, 0.35, 0.5],
                        help='层级聚类的 Beta 参数')
     
     # 其他参数
