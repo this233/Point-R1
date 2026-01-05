@@ -214,6 +214,6 @@ renders_o3d/
 
 outputs/captions/images
 
-PartNeXt_data
-PartNeXt_mesh
-outputs
+PartNeXt_data/
+PartNeXt_mesh/
+outputs/
