@@ -93,6 +93,30 @@ python extract_dino_features.py \
 - `example_material/dino_features/<object_id>_features.npy`：每个点的 DINO 特征。  
 - `example_material/dino_features/<object_id>_intermediate_2d/`：多视角 RGB、深度图、深度差异可视化等中间结果。  
 
+## 基于 PartNeXt hierarchyList 的逐层命名与 Caption
+
+脚本：`Point-R1-data/gt_tree_captioning.py`
+
+它会：
+
+- 读取 `hierarchyList` 并转为内部树结构（保留 `name/nodeId/maskId/children` 语义）
+  - 注：在 `PartNeXt_data` 中，`hierarchyList` 实际上是一个 **字符串**（需要 `ast.literal_eval` 解析），且解析后通常为 **长度为 1 的 list**，其中唯一元素就是“真实树根”（`nodeId` 常为 `0`，`name` 是类别名，如 Chair/Glasses）。
+- 对每个叶子 `maskId` 对应部件（PartNeXt part）从网格采样点，并在渲染图上生成高亮 mask
+- 非叶子节点用子节点点集并集来高亮
+- 对树做一次“**单子节点父名下沉**”修正：若某节点只有一个子节点，则把该节点名加入子节点候选名（`name_candidates`）
+- 对每个节点让 MLLM **一次性输出最终部件名 + 非结构化 caption**（caption 含视觉/几何特征与功能推断）
+
+示例：
+
+```bash
+python Point-R1-data/gt_tree_captioning.py \
+  --partnext_glb_dir /path/to/PartNeXt/data/data \
+  --partnext_ann_dir /path/to/PartNeXt/PartNeXt \
+  --partnext_object_id b3e33144d8224385a2036b431e1b1451 \
+  --output_dir outputs/partnext_tree_captions \
+  --dry_run
+```
+
 ## 点云与 GLB 加载及坐标系重定向
 
 ### GLB 加载与归一化

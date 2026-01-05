@@ -48,6 +48,17 @@ except ImportError:
     print("警告: trimesh 未安装，GLB 可视化功能将受限")
 
 try:
+    # Add PartNeXt library to path
+    sys.path.insert(0, '/mnt/data/code/Point-R1/PartNeXt/PartNeXt_lib')
+    from partnext import PartNeXtDataset, PartNeXtObject
+    PARTNEXT_AVAILABLE = True
+except ImportError as e:
+    PartNeXtDataset = None
+    PartNeXtObject = None
+    PARTNEXT_AVAILABLE = False
+    print(f"警告: PartNeXt 未安装或导入失败: {e}")
+
+try:
     import open3d as o3d
     import open3d.visualization.rendering as rendering
     OPEN3D_AVAILABLE = True
@@ -1879,6 +1890,287 @@ def render_sibling_group_views(state_data, glb_path, parent_level_name, parent_i
         if 'renderer_final' in locals() and renderer_final: renderer_final.cleanup()
 
 
+# ===================== PartNeXt Visualization Functions =====================
+
+# Global cache for PartNeXt dataset to avoid reloading
+PARTNEXT_DATASET_CACHE = None
+PARTNEXT_CURRENT_OBJECT = None
+
+def generate_distinct_colors(n):
+    """生成 n 个高区分度颜色"""
+    import colorsys
+    colors = []
+    for i in range(n):
+        hue = i / n
+        # 使用高饱和度和亮度
+        r, g, b = colorsys.hsv_to_rgb(hue, 0.8, 0.9)
+        colors.append([int(r * 255), int(g * 255), int(b * 255)])
+    return colors
+
+def load_partnext_dataset(glb_dir, ann_dir):
+    """加载 PartNeXt 数据集"""
+    global PARTNEXT_DATASET_CACHE
+    
+    if not PARTNEXT_AVAILABLE:
+        return None, [], "错误: PartNeXt 库未安装"
+    
+    try:
+        if not os.path.exists(glb_dir):
+            return None, [], f"错误: GLB 目录不存在: {glb_dir}"
+        if not os.path.exists(ann_dir):
+            return None, [], f"错误: 标注目录不存在: {ann_dir}"
+        
+        dataset = PartNeXtDataset(glb_dir, ann_dir)
+        PARTNEXT_DATASET_CACHE = dataset
+        
+        object_ids = list(dataset.get_object_ids())
+        num_objects = dataset.get_num_object()
+        
+        # 返回前100个对象ID作为示例
+        sample_ids = object_ids[:100] if len(object_ids) > 100 else object_ids
+        
+        return dataset, sample_ids, f"成功加载数据集，共 {num_objects} 个对象"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, [], f"加载数据集失败: {e}"
+
+def load_partnext_object(dataset, object_id):
+    """加载指定的 PartNeXt 对象"""
+    global PARTNEXT_CURRENT_OBJECT
+    
+    if dataset is None:
+        return None, None, "错误: 请先加载数据集"
+    
+    try:
+        pn_object = dataset.load_object(object_id)
+        if pn_object is None:
+            return None, None, f"错误: 无法加载对象 {object_id}"
+        
+        PARTNEXT_CURRENT_OBJECT = pn_object
+        
+        # 获取层次结构
+        hierarchy = pn_object.get_hierarchy()
+        
+        # 获取所有部件
+        all_parts = pn_object.get_all_parts()
+        
+        return pn_object, hierarchy, f"成功加载对象 {object_id}，共 {len(all_parts)} 个部件"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, None, f"加载对象失败: {e}"
+
+def hierarchy_to_tree_string(hierarchy, indent=0):
+    """将层次结构转换为可读的树形字符串，使用代码块保持格式"""
+    lines = []
+    
+    def process_node(node, depth=0, prefix_lines=None):
+        """递归处理节点，生成树形结构"""
+        if prefix_lines is None:
+            prefix_lines = []
+        
+        name = node.get("name", "Unknown")
+        node_id = node.get("nodeId", "?")
+        mask_id = node.get("maskId", None)
+        
+        # 构建当前行的前缀
+        line_prefix = ""
+        for i, is_continuing in enumerate(prefix_lines):
+            if i < len(prefix_lines) - 1:
+                line_prefix += "|   " if is_continuing else "    "
+            else:
+                line_prefix += "+-- " if is_continuing else "`-- "
+        
+        # 构建节点描述
+        if mask_id is not None:
+            node_desc = f"{name} [Part {mask_id}]"
+        else:
+            node_desc = f"{name}"
+        
+        # 根节点
+        if depth == 0:
+            lines.append(f"{name}")
+        else:
+            lines.append(f"{line_prefix}{node_desc}")
+        
+        # 处理子节点
+        children = node.get("children", [])
+        for i, child in enumerate(children):
+            is_last = (i == len(children) - 1)
+            new_prefix_lines = prefix_lines + [not is_last]
+            process_node(child, depth + 1, new_prefix_lines)
+    
+    if isinstance(hierarchy, list):
+        for root in hierarchy:
+            process_node(root, 0, [])
+    else:
+        process_node(hierarchy, 0, [])
+    
+    # 使用代码块包装，保持等宽字体和格式
+    tree_content = "\n".join(lines)
+    return f"```\n{tree_content}\n```"
+
+def visualize_partnext_parts_plotly(pn_object, point_size=2.0, sample_points=2000):
+    """将 PartNeXt 对象的所有部件用不同颜色可视化为点云"""
+    if pn_object is None:
+        return None, "错误: 对象未加载"
+    
+    try:
+        all_parts = pn_object.get_all_parts()
+        if not all_parts:
+            return None, "错误: 对象没有部件"
+        
+        # 生成颜色
+        num_parts = len(all_parts)
+        colors = generate_distinct_colors(num_parts)
+        
+        all_points = []
+        all_colors = []
+        part_info = []
+        
+        for i, (part_id, part_mesh) in enumerate(all_parts.items()):
+            # 从网格采样点
+            if hasattr(part_mesh, 'sample'):
+                # 计算每个部件应该采样的点数（按面积比例）
+                try:
+                    n_samples = max(100, int(sample_points * part_mesh.area / sum(p.area for p in all_parts.values())))
+                except:
+                    n_samples = sample_points // num_parts
+                
+                points = part_mesh.sample(min(n_samples, sample_points // num_parts + 100))
+            else:
+                # 如果无法采样，使用顶点
+                points = np.array(part_mesh.vertices)
+            
+            if len(points) > 0:
+                all_points.append(points)
+                all_colors.extend([colors[i]] * len(points))
+                part_info.append(f"部件 {part_id}: {len(points)} 点")
+        
+        if not all_points:
+            return None, "错误: 无法从部件采样点"
+        
+        # 合并所有点
+        all_points = np.vstack(all_points)
+        all_colors = np.array(all_colors) / 255.0
+        
+        # 创建 plotly figure
+        fig = points_to_plotly(all_points, colors=all_colors, 
+                               title=f"PartNeXt 部件可视化 ({num_parts} 个部件)", 
+                               point_size=point_size)
+        
+        info_msg = f"可视化完成：\n" + "\n".join(part_info)
+        return fig, info_msg
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"可视化失败: {e}"
+
+def visualize_single_part_plotly(pn_object, part_id, point_size=2.0, sample_points=5000):
+    """可视化单个部件"""
+    if pn_object is None:
+        return None, "错误: 对象未加载"
+    
+    try:
+        all_parts = pn_object.get_all_parts()
+        part_id_str = str(part_id)
+        
+        if part_id_str not in all_parts:
+            return None, f"错误: 部件 ID {part_id} 不存在，可用的 ID: {list(all_parts.keys())}"
+        
+        part_mesh = all_parts[part_id_str]
+        
+        # 采样点
+        if hasattr(part_mesh, 'sample'):
+            points = part_mesh.sample(sample_points)
+        else:
+            points = np.array(part_mesh.vertices)
+        
+        # 使用单一颜色
+        colors = np.ones((len(points), 3)) * np.array([0.2, 0.6, 0.9])
+        
+        fig = points_to_plotly(points, colors=colors,
+                               title=f"部件 {part_id} 可视化 ({len(points)} 点)",
+                               point_size=point_size)
+        
+        return fig, f"部件 {part_id} 可视化完成，共 {len(points)} 个点"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"可视化失败: {e}"
+
+def export_partnext_glb_for_viewer(pn_object):
+    """导出 PartNeXt 对象的 GLB 文件用于 Model3D 查看器"""
+    if pn_object is None:
+        return None, "错误: 对象未加载"
+    
+    try:
+        mesh = pn_object.get_mesh()
+        
+        # 导出到临时文件
+        temp_dir = '/mnt/extra/tmp'
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        temp_path = os.path.join(temp_dir, f"partnext_{pn_object.glb_id}.glb")
+        
+        # 导出 GLB
+        mesh.export(temp_path)
+        
+        return temp_path, f"GLB 文件已导出到 {temp_path}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"导出失败: {e}"
+
+def create_parts_colored_glb(pn_object):
+    """创建带有不同颜色部件的 GLB 文件"""
+    if pn_object is None:
+        return None, "错误: 对象未加载"
+    
+    try:
+        all_parts = pn_object.get_all_parts()
+        num_parts = len(all_parts)
+        colors = generate_distinct_colors(num_parts)
+        
+        colored_meshes = []
+        
+        for i, (part_id, part_mesh) in enumerate(all_parts.items()):
+            # 复制网格并设置颜色
+            colored_mesh = part_mesh.copy()
+            
+            # 创建顶点颜色数组
+            color = colors[i]
+            vertex_colors = np.ones((len(colored_mesh.vertices), 4)) * 255
+            vertex_colors[:, :3] = color
+            colored_mesh.visual.vertex_colors = vertex_colors.astype(np.uint8)
+            
+            colored_meshes.append(colored_mesh)
+        
+        # 合并所有网格
+        if colored_meshes:
+            combined_mesh = trimesh.util.concatenate(colored_meshes)
+        else:
+            return None, "错误: 没有可用的部件"
+        
+        # 导出到临时文件
+        temp_dir = '/mnt/extra/tmp'
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        temp_path = os.path.join(temp_dir, f"partnext_colored_{pn_object.glb_id}.glb")
+        combined_mesh.export(temp_path)
+        
+        return temp_path, f"带颜色的 GLB 已导出 ({num_parts} 个部件)"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"导出失败: {e}"
+
+
 # ===================== Bad Case Analysis Functions =====================
 
 def load_bad_cases():
@@ -1993,36 +2285,41 @@ def load_selected_bad_case(class_name, error_type, case_label):
 def change_mode(mode):
     """根据模式切换显示不同的输入组件和可视化组件"""
     # 输出组件列表: 
-    # [objaverse_inputs, glb_inputs, modelnet_inputs, pca_inputs, cluster_inputs, bad_case_inputs, plot_output, model3d_output, contour_outputs_group]
+    # [objaverse_inputs, glb_inputs, modelnet_inputs, pca_inputs, cluster_inputs, bad_case_inputs, partnext_inputs, plot_output, model3d_output, contour_outputs_group, partnext_outputs_group]
     
-    # 默认隐藏所有输入组
-    updates = [gr.update(visible=False)] * 9
+    # 默认隐藏所有输入组 (7 input groups + 4 output groups = 11)
+    updates = [gr.update(visible=False)] * 11
     
     if mode == 'Objaverse':
         updates[0] = gr.update(visible=True)
-        updates[6] = gr.update(visible=True)  # plot
-        updates[7] = gr.update(visible=False) # model3d
+        updates[7] = gr.update(visible=True)  # plot
+        updates[8] = gr.update(visible=False) # model3d
     elif mode == 'GLB':
         updates[1] = gr.update(visible=True)
-        updates[6] = gr.update(visible=False)
-        updates[7] = gr.update(visible=True)
+        updates[7] = gr.update(visible=False)
+        updates[8] = gr.update(visible=True)
     elif mode == 'ModelNet40':
         updates[2] = gr.update(visible=True)
-        updates[6] = gr.update(visible=True)
-        updates[7] = gr.update(visible=False)
+        updates[7] = gr.update(visible=True)
+        updates[8] = gr.update(visible=False)
     elif mode == 'PCA点云':
         updates[3] = gr.update(visible=True)
-        updates[6] = gr.update(visible=True)
-        updates[7] = gr.update(visible=False)
+        updates[7] = gr.update(visible=True)
+        updates[8] = gr.update(visible=False)
     elif mode == 'Feature Clustering':
         updates[4] = gr.update(visible=True)
-        updates[6] = gr.update(visible=True)
-        updates[7] = gr.update(visible=False)
-        updates[8] = gr.update(visible=True) # contour_outputs_group
+        updates[7] = gr.update(visible=True)
+        updates[8] = gr.update(visible=False)
+        updates[9] = gr.update(visible=True) # contour_outputs_group
     elif mode == 'Bad Case Analysis':
         updates[5] = gr.update(visible=True)
-        updates[6] = gr.update(visible=True)
-        updates[7] = gr.update(visible=False)
+        updates[7] = gr.update(visible=True)
+        updates[8] = gr.update(visible=False)
+    elif mode == 'PartNeXt':
+        updates[6] = gr.update(visible=True)  # partnext_inputs
+        updates[7] = gr.update(visible=True)  # plot
+        updates[8] = gr.update(visible=True)  # model3d
+        updates[10] = gr.update(visible=True) # partnext_outputs_group
         
     return updates
 
@@ -2054,13 +2351,14 @@ def main():
             4. **PCA点云** - 加载DINO特征PCA可视化点云
             5. **Feature Clustering** - 特征聚类分析
             6. **Bad Case Analysis** - 错误案例深度分析
+            7. **PartNeXt** - 部件分割数据集可视化与层次结构浏览
             """
         )
         
         with gr.Row():
             with gr.Column(scale=1):
                 mode = gr.Radio(
-                    ['Objaverse', 'GLB', 'ModelNet40', 'PCA点云', 'Feature Clustering', 'Bad Case Analysis'],
+                    ['Objaverse', 'GLB', 'ModelNet40', 'PCA点云', 'Feature Clustering', 'Bad Case Analysis', 'PartNeXt'],
                     value='Objaverse',
                     label='选择模式',
                     info='选择要可视化的点云类型'
@@ -2240,6 +2538,67 @@ def main():
                     bc_case = gr.Dropdown(choices=[], label="Select Case", allow_custom_value=True)
                     bc_btn = gr.Button("Visualize Bad Case", variant="primary")
 
+                # PartNeXt Inputs
+                with gr.Group(visible=False) as partnext_inputs:
+                    gr.Markdown("### PartNeXt 部件可视化")
+                    partnext_glb_dir = gr.Textbox(
+                        label='GLB 目录路径',
+                        placeholder='输入 PartNeXt GLB 数据目录 (glbs 文件夹路径)',
+                        value='/mnt/data/code/Point-R1/PartNeXt_mesh/glbs'
+                    )
+                    partnext_ann_dir = gr.Textbox(
+                        label='标注目录路径',
+                        placeholder='输入 PartNeXt 标注目录 (HuggingFace datasets 格式)',
+                        value='/mnt/data/code/Point-R1/PartNeXt_data'
+                    )
+                    partnext_load_dataset_btn = gr.Button('加载数据集', variant='secondary')
+                    
+                    # 数据集状态
+                    partnext_dataset_state = gr.State(None)
+                    partnext_object_state = gr.State(None)
+                    
+                    partnext_object_id = gr.Dropdown(
+                        label='选择对象 ID',
+                        choices=[],
+                        allow_custom_value=True,
+                        info='加载数据集后可选择对象'
+                    )
+                    partnext_load_object_btn = gr.Button('加载对象', variant='primary')
+                    
+                    gr.Markdown("---")
+                    gr.Markdown("### 可视化选项")
+                    
+                    partnext_point_size = gr.Slider(
+                        minimum=0.5,
+                        maximum=10.0,
+                        value=2.0,
+                        step=0.5,
+                        label='点大小'
+                    )
+                    partnext_sample_points = gr.Slider(
+                        minimum=1000,
+                        maximum=20000,
+                        value=5000,
+                        step=1000,
+                        label='采样点数'
+                    )
+                    
+                    with gr.Row():
+                        partnext_vis_all_btn = gr.Button('可视化所有部件 (点云)', variant='primary')
+                        partnext_vis_glb_btn = gr.Button('查看原始模型 (GLB)', variant='secondary')
+                    
+                    with gr.Row():
+                        partnext_vis_colored_glb_btn = gr.Button('查看带颜色部件 (GLB)', variant='secondary')
+                    
+                    gr.Markdown("---")
+                    gr.Markdown("### 单个部件可视化")
+                    partnext_part_id = gr.Textbox(
+                        label='部件 ID',
+                        placeholder='输入要查看的部件 ID',
+                        value='0'
+                    )
+                    partnext_vis_part_btn = gr.Button('可视化单个部件', variant='secondary')
+
                 info_output = gr.Markdown(label='Info')
             
             with gr.Column(scale=2):
@@ -2277,12 +2636,26 @@ def main():
                     with gr.Row():
                         som_v6_l = gr.Image(label="View 6 (Clean)", type="numpy")
                         som_v6_r = gr.Image(label="View 6 (SoM)", type="numpy")
+                
+                # PartNeXt 输出区
+                with gr.Group(visible=False) as partnext_outputs_group:
+                    gr.Markdown("### 部件层次结构 (Hierarchy Tree)")
+                    partnext_hierarchy_output = gr.Markdown(
+                        value="加载对象后将显示层次结构...",
+                        label="层次结构"
+                    )
+                    gr.Markdown("---")
+                    gr.Markdown("### 部件信息")
+                    partnext_parts_info = gr.Markdown(
+                        value="加载对象后将显示部件信息...",
+                        label="部件信息"
+                    )
         
         # 模式切换
         mode.change(
             change_mode,
             inputs=[mode],
-            outputs=[objaverse_inputs, glb_inputs, modelnet_inputs, pca_inputs, cluster_inputs, bad_case_inputs, plot_output, model3d_output, contour_outputs_group]
+            outputs=[objaverse_inputs, glb_inputs, modelnet_inputs, pca_inputs, cluster_inputs, bad_case_inputs, partnext_inputs, plot_output, model3d_output, contour_outputs_group, partnext_outputs_group]
         )
         
         # Objaverse 按钮事件
@@ -2382,6 +2755,92 @@ def main():
             outputs=[plot_output, info_output]
         )
         
+        # PartNeXt Events
+        def partnext_load_dataset_wrapper(glb_dir, ann_dir):
+            dataset, object_ids, msg = load_partnext_dataset(glb_dir.strip(), ann_dir.strip())
+            return dataset, gr.update(choices=object_ids, value=object_ids[0] if object_ids else None), msg
+        
+        partnext_load_dataset_btn.click(
+            partnext_load_dataset_wrapper,
+            inputs=[partnext_glb_dir, partnext_ann_dir],
+            outputs=[partnext_dataset_state, partnext_object_id, info_output]
+        )
+        
+        def partnext_load_object_wrapper(dataset, object_id):
+            if dataset is None:
+                return None, "请先加载数据集", "请先加载数据集", ""
+            
+            pn_object, hierarchy, msg = load_partnext_object(dataset, object_id)
+            
+            if pn_object is None:
+                return None, msg, "加载失败", ""
+            
+            # 生成层次结构树
+            hierarchy_str = "### 层次结构树\n\n" + hierarchy_to_tree_string(hierarchy)
+            
+            # 生成部件信息
+            all_parts = pn_object.get_all_parts()
+            parts_info = f"### 部件列表 (共 {len(all_parts)} 个叶节点部件)\n\n"
+            for part_id in sorted(all_parts.keys(), key=lambda x: int(x)):
+                part_mesh = all_parts[part_id]
+                parts_info += f"- **部件 {part_id}**: {len(part_mesh.faces)} 面, {len(part_mesh.vertices)} 顶点\n"
+            
+            return pn_object, msg, hierarchy_str, parts_info
+        
+        partnext_load_object_btn.click(
+            partnext_load_object_wrapper,
+            inputs=[partnext_dataset_state, partnext_object_id],
+            outputs=[partnext_object_state, info_output, partnext_hierarchy_output, partnext_parts_info]
+        )
+        
+        # 可视化所有部件 (点云)
+        def partnext_vis_all_wrapper(pn_object, point_size, sample_points):
+            if pn_object is None:
+                return None, "请先加载对象"
+            return visualize_partnext_parts_plotly(pn_object, point_size, int(sample_points))
+        
+        partnext_vis_all_btn.click(
+            partnext_vis_all_wrapper,
+            inputs=[partnext_object_state, partnext_point_size, partnext_sample_points],
+            outputs=[plot_output, info_output]
+        )
+        
+        # 查看原始 GLB
+        def partnext_vis_glb_wrapper(pn_object):
+            if pn_object is None:
+                return None, "请先加载对象"
+            return export_partnext_glb_for_viewer(pn_object)
+        
+        partnext_vis_glb_btn.click(
+            partnext_vis_glb_wrapper,
+            inputs=[partnext_object_state],
+            outputs=[model3d_output, info_output]
+        )
+        
+        # 查看带颜色部件 GLB
+        def partnext_vis_colored_glb_wrapper(pn_object):
+            if pn_object is None:
+                return None, "请先加载对象"
+            return create_parts_colored_glb(pn_object)
+        
+        partnext_vis_colored_glb_btn.click(
+            partnext_vis_colored_glb_wrapper,
+            inputs=[partnext_object_state],
+            outputs=[model3d_output, info_output]
+        )
+        
+        # 可视化单个部件
+        def partnext_vis_part_wrapper(pn_object, part_id, point_size, sample_points):
+            if pn_object is None:
+                return None, "请先加载对象"
+            return visualize_single_part_plotly(pn_object, part_id, point_size, int(sample_points))
+        
+        partnext_vis_part_btn.click(
+            partnext_vis_part_wrapper,
+            inputs=[partnext_object_state, partnext_part_id, partnext_point_size, partnext_sample_points],
+            outputs=[plot_output, info_output]
+        )
+        
         gr.Markdown(
             """
             ### 使用说明：
@@ -2391,12 +2850,14 @@ def main():
             - **PCA点云模式**: 输入 .ply 文件路径（例如：`example_material/dino_features/xxx_pca.ply`），点击加载按钮（点云可视化）
             - **Feature Clustering**: 输入点云(.npy)和特征(.npy)路径，设置KNN数量和4个相似度阈值Beta，点击计算。计算完成后可切换层级查看聚类结果。
             - **Bad Case Analysis**: 选择类别和错误类型，查看具体的错误案例和模型推理过程。
+            - **PartNeXt 模式**: 加载 PartNeXt 数据集，选择对象查看部件分割结果和层次结构树。支持用不同颜色可视化所有部件，也可单独查看某个部件。
             
             ### 提示：
             - 点云可视化支持鼠标交互（旋转、缩放、平移）
             - 3D 模型可视化支持完整的 3D 交互（旋转、缩放、平移、材质查看）
             - 如果点云没有颜色信息，将显示为灰色
             - PCA点云的颜色表示特征的PCA降维结果（RGB对应前3个主成分）
+            - PartNeXt 需要先从 HuggingFace 下载数据集（GLB 和标注目录）
             """
         )
     

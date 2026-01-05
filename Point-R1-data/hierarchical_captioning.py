@@ -2501,7 +2501,7 @@ def main():
     parser.add_argument('--mllm_provider', type=str, default='dashscope',
                        choices=['openai', 'anthropic', 'openai-compatible', 'dashscope'],
                        help='MLLM 提供商 (默认: dashscope)')
-    parser.add_argument('--mllm_api_key', type=str, default="sk-7a4e2ece8871495895a9c6a506715e9b",
+    parser.add_argument('--mllm_api_key', type=str, default=None,
                        help='MLLM API Key（也可通过环境变量设置: DASHSCOPE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY）')
     parser.add_argument('--mllm_model', type=str, default=None,
                        help='MLLM 模型名称 (dashscope默认: qwen3-vl-plus)')

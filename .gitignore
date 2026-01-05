@@ -213,3 +213,7 @@ renders_o3d/
 *_features.npy
 
 outputs/captions/images
+
+PartNeXt_data
+PartNeXt_mesh
+outputs
